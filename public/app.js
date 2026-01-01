@@ -28,8 +28,16 @@ function formatTime(date) {
     return d.toTimeString().split(' ')[0];
 }
 
+// Format numbers with K suffix
+function formatNumberSmart(num) {
+    if (num >= 1000) {
+        return (num / 1000).toFixed(1) + 'K';
+    }
+    return num.toFixed(1);
+}
+
 // Draw graph
-function drawGraph(canvasId, data, label) {
+function drawGraph(canvasId, data, label, isBytes = false) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
 
@@ -71,7 +79,13 @@ function drawGraph(canvasId, data, label) {
     ctx.fillStyle = '#666';
     ctx.font = '10px monospace';
     const current = data[data.length - 1] || 0;
-    ctx.fillText(`${current.toFixed(1)} ${label}`, 5, 15);
+    let displayValue;
+    if (isBytes) {
+        displayValue = formatBytes(current) + '/s';
+    } else {
+        displayValue = formatNumberSmart(current) + ' ' + label;
+    }
+    ctx.fillText(displayValue, 5, 15);
 }
 
 // Update stats display
@@ -129,7 +143,7 @@ function updateStats(data) {
 
             // Draw graphs
             drawGraph('messagesGraph', history.messages, 'msg/s');
-            drawGraph('bytesGraph', history.bytes, 'B/s');
+            drawGraph('bytesGraph', history.bytes, '', true);
 
             // Memory
             if (data.performance.memoryUsage) {
