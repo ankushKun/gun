@@ -53,7 +53,7 @@ server {
         proxy_send_timeout 86400;
         proxy_buffering off;
     }
-    
+
     location / {
         proxy_pass http://127.0.0.1:8765;
         proxy_http_version 1.1;
@@ -64,4 +64,11 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
+```
+
+If you want to run this with pm2
+
+```bash
+cd gun
+pm2 start server.js --name "gun"
 ```
