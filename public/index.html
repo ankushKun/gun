@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>gun.js stats</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>gun.js peer</h1>
+            <span id="statusText">offline</span>
+        </header>
+
+        <section>
+            <h2>uptime</h2>
+            <div class="value" id="uptimeDetail">0d 0h 0m 0s</div>
+        </section>
+
+        <section>
+            <h2>connections</h2>
+            <table>
+                <tr>
+                    <td>current</td>
+                    <td id="currentConnections">0</td>
+                </tr>
+                <tr>
+                    <td>total</td>
+                    <td id="totalConnections">0</td>
+                </tr>
+                <tr>
+                    <td>peers</td>
+                    <td id="activePeers">0</td>
+                </tr>
+            </table>
+        </section>
+
+        <section>
+            <h2>messages</h2>
+            <div class="value" id="messagesProcessed">0</div>
+        </section>
+
+        <section>
+            <h2>data</h2>
+            <div class="value" id="bytesTransferred">0 B</div>
+        </section>
+
+        <section>
+            <h2>memory</h2>
+            <table>
+                <tr>
+                    <td>heap</td>
+                    <td id="heapUsed">0 MB</td>
+                </tr>
+                <tr>
+                    <td>total</td>
+                    <td id="heapTotal">0 MB</td>
+                </tr>
+                <tr>
+                    <td>rss</td>
+                    <td id="rss">0 MB</td>
+                </tr>
+            </table>
+        </section>
+
+        <footer>
+            <span id="lastUpdated">-</span>
+        </footer>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+
+</html>
