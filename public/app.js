@@ -1,3 +1,13 @@
+// History tracking
+const history = {
+    messages: [],
+    bytes: [],
+    maxPoints: 60,
+    lastMessages: 0,
+    lastBytes: 0,
+    lastTime: Date.now()
+};
+
 // Format bytes to human readable
 function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
@@ -16,6 +26,52 @@ function formatNumber(num) {
 function formatTime(date) {
     const d = new Date(date);
     return d.toTimeString().split(' ')[0];
+}
+
+// Draw graph
+function drawGraph(canvasId, data, label) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Clear
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, width, height);
+
+    if (data.length < 2) return;
+
+    // Find max value for scaling
+    const max = Math.max(...data, 1);
+
+    // Draw line
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+
+    const step = width / (history.maxPoints - 1);
+    const startIdx = Math.max(0, data.length - history.maxPoints);
+
+    for (let i = 0; i < data.length - startIdx; i++) {
+        const x = i * step;
+        const y = height - (data[startIdx + i] / max * (height - 10)) - 5;
+
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+    }
+
+    ctx.stroke();
+
+    // Draw current value
+    ctx.fillStyle = '#666';
+    ctx.font = '10px monospace';
+    const current = data[data.length - 1] || 0;
+    ctx.fillText(`${current.toFixed(1)} ${label}`, 5, 15);
 }
 
 // Update stats display
@@ -45,12 +101,35 @@ function updateStats(data) {
             document.getElementById('activePeers').textContent = data.connections.activePeers;
         }
 
-        // Performance
+        // Performance - calculate rates
         if (data.performance) {
-            document.getElementById('messagesProcessed').textContent =
-                formatNumber(data.performance.messagesProcessed);
-            document.getElementById('bytesTransferred').textContent =
-                formatBytes(data.performance.bytesTransferred);
+            const now = Date.now();
+            const timeDiff = (now - history.lastTime) / 1000; // seconds
+
+            // Calculate per-second rates
+            const msgDiff = data.performance.messagesProcessed - history.lastMessages;
+            const byteDiff = data.performance.bytesTransferred - history.lastBytes;
+
+            const msgRate = timeDiff > 0 ? msgDiff / timeDiff : 0;
+            const byteRate = timeDiff > 0 ? byteDiff / timeDiff : 0;
+
+            // Update history
+            history.messages.push(msgRate);
+            history.bytes.push(byteRate);
+
+            if (history.messages.length > history.maxPoints) {
+                history.messages.shift();
+                history.bytes.shift();
+            }
+
+            // Update tracking
+            history.lastMessages = data.performance.messagesProcessed;
+            history.lastBytes = data.performance.bytesTransferred;
+            history.lastTime = now;
+
+            // Draw graphs
+            drawGraph('messagesGraph', history.messages, 'msg/s');
+            drawGraph('bytesGraph', history.bytes, 'B/s');
 
             // Memory
             if (data.performance.memoryUsage) {
