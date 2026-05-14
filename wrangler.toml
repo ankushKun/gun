@@ -10,4 +10,4 @@ class_name = "GunPeerObject"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["GunPeerObject"]
+new_sqlite_classes = ["GunPeerObject"]
