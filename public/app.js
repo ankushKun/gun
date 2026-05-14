@@ -145,16 +145,11 @@ function updateStats(data) {
             drawGraph('messagesGraph', history.messages, 'msg/s');
             drawGraph('bytesGraph', history.bytes, '', true);
 
-            // Memory
-            if (data.performance.memoryUsage) {
-                const mem = data.performance.memoryUsage;
-                document.getElementById('heapUsed').textContent =
-                    (mem.heapUsed / 1024 / 1024).toFixed(1) + ' MB';
-                document.getElementById('heapTotal').textContent =
-                    (mem.heapTotal / 1024 / 1024).toFixed(1) + ' MB';
-                document.getElementById('rss').textContent =
-                    (mem.rss / 1024 / 1024).toFixed(1) + ' MB';
-            }
+            document.getElementById('heapUsed').textContent =
+                data.storage && data.storage.persistent ? 'persistent' : 'unknown';
+            document.getElementById('heapTotal').textContent =
+                data.storage && data.storage.backend ? data.storage.backend : 'durable object';
+            document.getElementById('rss').textContent = 'n/a';
         }
 
         // Last updated

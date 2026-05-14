@@ -1,74 +1,46 @@
 # gun.js peer
 
-gun.js peer server with stats dashboard.
+Cloudflare Workers Gun.js-compatible peer with a stats dashboard and persistent
+Durable Object storage.
 
 ## local
 
 ```bash
 npm install
-npm start
+npm run dev
 ```
 
-dashboard at `http://localhost:8765`
+Dashboard at the Wrangler dev URL, usually `http://localhost:8787`.
+Gun clients should use the `/gun` peer endpoint:
 
-## env
-
-- `PORT` - server port (default: 8765)
-- `PEERS` - comma-separated peer urls
-
-## production
-
-To make this gun server work on a vps with nginx, you will have to add these configs
-
-```nginx
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-
-# ------------------------------------
-# GunJS WebSocket
-# ------------------------------------
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-
-    server_name yourdomain.com;
-
-    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem; # managed by Certbot
-    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem; # managed by Certbot
-    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
-    
-    location = /gun {
-        proxy_pass http://127.0.0.1:8765;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 86400;
-        proxy_send_timeout 86400;
-        proxy_buffering off;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:8765;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
+```js
+const gun = Gun({
+  peers: ["https://your-worker.example.com/gun"],
+});
 ```
 
-If you want to run this with pm2
+## build
 
 ```bash
-cd gun
-pm2 start server.js --name "gun"
+npm run build
 ```
+
+## deploy
+
+```bash
+npm run deploy
+```
+
+## endpoints
+
+- `/` - dashboard
+- `/gun` - Gun-compatible WebSocket peer endpoint
+- `/api/stats` - dashboard stats
+- `/health` - health check
+
+## persistence
+
+The old Node server used Gun Radisk with `file: "data"`. Cloudflare Workers do
+not provide a persistent local filesystem for that model, so this version stores
+Gun graph nodes in Durable Object storage instead. Each write is acknowledged
+after the graph merge is stored, and reads are served from the Durable Object.

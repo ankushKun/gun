@@ -1,0 +1,13 @@
+name = "gun-peer-server"
+main = "src/worker.js"
+compatibility_date = "2026-05-14"
+
+assets = { directory = "./public", binding = "ASSETS" }
+
+[[durable_objects.bindings]]
+name = "GUN_PEER"
+class_name = "GunPeerObject"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["GunPeerObject"]
