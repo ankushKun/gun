@@ -268,6 +268,46 @@ export async function gunReadManifest(gun, prefix) {
     .sort();
 }
 
+export function tombstonePayload(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const payload = {};
+  for (const key of Object.keys(raw)) {
+    if (key !== "_") {
+      payload[key] = null;
+    }
+  }
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+/** Drain a soul via Gun field tombstones (put null per field). Gun rejects put(null) at soul root. */
+export async function gunDrainSoul(gun, soul, raw) {
+  const payload = tombstonePayload(raw);
+  if (!payload) {
+    throw new Error(`no fields to drain for ${soul}`);
+  }
+  return gunPut(gun, soul, payload);
+}
+
+export async function prefetchGraphRaws(baseUrl, souls, concurrency = 16) {
+  const rawBySoul = new Map();
+  for (let i = 0; i < souls.length; i += concurrency) {
+    const batch = souls.slice(i, i + concurrency);
+    await Promise.all(
+      batch.map(async (soul) => {
+        try {
+          const node = await fetchGraphNode(baseUrl, soul);
+          rawBySoul.set(soul, node.raw);
+        } catch {
+          // already gone from the graph index
+        }
+      }),
+    );
+  }
+  return rawBySoul;
+}
+
 export function gunDeleteSoul(gun, soul) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`delete timed out for ${soul}`)), 30_000);
@@ -286,21 +326,11 @@ export function gunDeleteSoul(gun, soul) {
 export async function gunTombstoneSoul(gun, baseUrl, soul) {
   try {
     const node = await fetchGraphNode(baseUrl, soul);
-    if (node.raw && typeof node.raw === "object") {
-      const payload = {};
-      for (const key of Object.keys(node.raw)) {
-        if (key !== "_") {
-          payload[key] = null;
-        }
-      }
-      if (Object.keys(payload).length > 0) {
-        return gunPut(gun, soul, payload);
-      }
-    }
+    return gunDrainSoul(gun, soul, node.raw);
   } catch {
     // already hidden from the graph index
+    return gunDeleteSoul(gun, soul);
   }
-  return gunDeleteSoul(gun, soul);
 }
 
 export async function gunRemoveManifestEntry(gun, prefix, soul) {
