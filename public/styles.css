@@ -42,6 +42,8 @@
     --link: #2fa98c;
     --error: #d4847a;
     --error-dim: #9a5a52;
+    --latency-warn: #b9a06e;
+    --latency-slow: #9e6860;
 
     --hover-fg: var(--accent);
     --hover-bg: var(--bg-hover);
@@ -286,8 +288,24 @@ header {
     letter-spacing: 0;
 }
 
+.status-latency.is-warn {
+    color: var(--latency-warn);
+}
+
+.status-latency.is-slow {
+    color: var(--latency-slow);
+}
+
 #statusChip.active .status-latency {
     color: var(--text-muted);
+}
+
+#statusChip.active .status-latency.is-warn {
+    color: var(--latency-warn);
+}
+
+#statusChip.active .status-latency.is-slow {
+    color: var(--latency-slow);
 }
 
 h1 {
