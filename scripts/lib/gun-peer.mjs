@@ -48,8 +48,14 @@ export function parseArgs(argv, defaults = {}) {
       opts.url = argv[++i] || "";
     } else if (arg === "--prefix") {
       opts.prefix = argv[++i] ?? "";
+    } else if (arg === "--q" || arg === "--query") {
+      opts.query = argv[++i] ?? "";
     } else if (arg === "--interval") {
       opts.interval = Number(argv[++i]);
+    } else if (arg === "--random") {
+      opts.random = Number(argv[++i]);
+    } else if (arg === "--no-random") {
+      opts.random = 0;
     } else if (arg === "--local") {
       opts.local = true;
     } else {
@@ -62,13 +68,70 @@ export function parseArgs(argv, defaults = {}) {
   return opts;
 }
 
-/** Worker API — only used by clear-do-storage.mjs */
+/** Worker graph API — listing for drain-peer; stats for clear-do-storage */
 export async function fetchStats(baseUrl) {
   const response = await fetch(`${peerBaseUrl(baseUrl)}/api/stats`);
   if (!response.ok) {
     throw new Error(`stats failed: ${response.status} ${await response.text()}`);
   }
   return response.json();
+}
+
+export async function fetchGraphSouls(baseUrl, params = {}) {
+  const qs = new URLSearchParams(params);
+  const response = await fetch(`${peerBaseUrl(baseUrl)}/api/graph/souls?${qs}`);
+  if (!response.ok) {
+    throw new Error(`graph souls failed: ${response.status} ${await response.text()}`);
+  }
+  return response.json();
+}
+
+export async function fetchGraphNode(baseUrl, soul) {
+  const response = await fetch(
+    `${peerBaseUrl(baseUrl)}/api/graph/node?soul=${encodeURIComponent(soul)}`,
+  );
+  if (!response.ok) {
+    throw new Error(`graph node failed: ${response.status} ${await response.text()}`);
+  }
+  return response.json();
+}
+
+export function soulPaths(data) {
+  return (data.souls ?? []).map((row) => (typeof row === "string" ? row : row.soul));
+}
+
+/** Paginate /api/graph/souls until every visible soul is listed. */
+export async function listAllGraphSouls(baseUrl, { prefix = "", query = "" } = {}) {
+  const souls = [];
+  let cursor;
+  do {
+    const params = { limit: "500" };
+    if (prefix) {
+      params.prefix = prefix.endsWith("/") ? prefix : `${prefix}/`;
+    }
+    if (query) {
+      params.q = query;
+    }
+    if (cursor) {
+      params.cursor = cursor;
+    }
+    const page = await fetchGraphSouls(baseUrl, params);
+    souls.push(...soulPaths(page));
+    cursor = page.truncated && page.cursor ? page.cursor : undefined;
+  } while (cursor);
+  return souls;
+}
+
+export async function listVisibleGraphSouls(baseUrl, { prefix = "", query = "" } = {}) {
+  const params = { limit: "500", sort: "updated" };
+  if (prefix) {
+    params.prefix = prefix.endsWith("/") ? prefix : `${prefix}/`;
+  }
+  if (query) {
+    params.q = query;
+  }
+  const page = await fetchGraphSouls(baseUrl, params);
+  return soulPaths(page);
 }
 
 export function runScript(main) {
@@ -217,6 +280,27 @@ export function gunDeleteSoul(gun, soul) {
       resolve(ack);
     });
   });
+}
+
+/** Tombstone via Gun using field list from the worker graph inspector. */
+export async function gunTombstoneSoul(gun, baseUrl, soul) {
+  try {
+    const node = await fetchGraphNode(baseUrl, soul);
+    if (node.raw && typeof node.raw === "object") {
+      const payload = {};
+      for (const key of Object.keys(node.raw)) {
+        if (key !== "_") {
+          payload[key] = null;
+        }
+      }
+      if (Object.keys(payload).length > 0) {
+        return gunPut(gun, soul, payload);
+      }
+    }
+  } catch {
+    // already hidden from the graph index
+  }
+  return gunDeleteSoul(gun, soul);
 }
 
 export async function gunRemoveManifestEntry(gun, prefix, soul) {
