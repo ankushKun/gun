@@ -157,4 +157,79 @@ export async function readSystemKeys() {
   return response.json();
 }
 
+/** Write an arbitrary node shape via WebSocket /gun. */
+export async function putGraphNodeCustom(soul, fields, timestamp) {
+  const state = {};
+  for (const key of Object.keys(fields)) {
+    state[key] = timestamp;
+  }
+  const message = JSON.stringify({
+    "#": `put-${soul}-${timestamp}`,
+    put: {
+      [soul]: {
+        _: { "#": soul, ">": state },
+        ...fields,
+      },
+    },
+  });
+  const ws = new WebSocket(gunPeerWsUrl(BASE_URL));
+
+  await new Promise((resolve, reject) => {
+    ws.addEventListener("open", resolve, { once: true });
+    ws.addEventListener("error", reject, { once: true });
+  });
+
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`put timed out for ${soul}`)), 120_000);
+      ws.addEventListener("message", (event) => {
+        clearTimeout(timer);
+        try {
+          resolve(JSON.parse(String(event.data)));
+        } catch (error) {
+          reject(error);
+        }
+      }, { once: true });
+      ws.send(message);
+    });
+
+    if (reply?.err) {
+      throw new Error(`put failed for ${soul}: ${reply.err}`);
+    }
+    return reply;
+  } finally {
+    ws.close();
+  }
+}
+
+export async function fetchSubgraph(params = {}) {
+  const qs = new URLSearchParams(params);
+  const response = await e2eFetch(`/api/graph/subgraph?${qs}`);
+  if (!response.ok) {
+    throw new Error(`subgraph failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function fetchGraphSouls(params = {}) {
+  const qs = new URLSearchParams(params);
+  const response = await e2eFetch(`/api/graph/souls?${qs}`);
+  if (!response.ok) {
+    throw new Error(`graph souls failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function fetchGraphNode(soul) {
+  const response = await e2eFetch(`/api/graph/node?soul=${encodeURIComponent(soul)}`);
+  if (!response.ok) {
+    throw new Error(`graph node failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+export function soulPaths(data) {
+  return (data.souls ?? []).map((row) => (typeof row === "string" ? row : row.soul));
+}
+
 export { TEST_EVICT_AT, TEST_EVICT_BYTES, PAYLOAD_SIZE, BASE_URL, gunPeerUrl, gunPeerWsUrl };

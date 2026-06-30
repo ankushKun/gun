@@ -158,7 +158,22 @@ async function removePeer(id, retry = true) {
     }
 }
 
+function initPeersToggle() {
+    const toggle = document.getElementById('peersToggle');
+    const panel = document.getElementById('peersPanel');
+    if (!toggle || !panel) return;
+
+    toggle.addEventListener('click', () => {
+        const open = toggle.getAttribute('aria-expanded') === 'true';
+        toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+        toggle.classList.toggle('peers-toggle--open', !open);
+        panel.hidden = open;
+    });
+}
+
 function initPeers() {
+    initPeersToggle();
+
     document.getElementById('peerForm')?.addEventListener('submit', (event) => {
         event.preventDefault();
         addPeerUrl();

@@ -15,6 +15,16 @@ const STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
 const STORAGE_EVICT_AT_BYTES = 9 * 1024 * 1024 * 1024;
 const STORAGE_EVICT_BYTES = 1 * 1024 * 1024 * 1024;
 
+const GRAPH_SOULS_DEFAULT_LIMIT = 100;
+const GRAPH_SOULS_MAX_LIMIT = 500;
+const GRAPH_SUBGRAPH_DEFAULT_NODES = 200;
+const GRAPH_SUBGRAPH_MAX_NODES = 500;
+const GRAPH_SUBGRAPH_MAX_DEPTH = 2;
+const GRAPH_FIELD_PREVIEW_LEN = 80;
+const GRAPH_INSPECTOR_COLLAPSE_AT = 12;
+const GRAPH_INSPECTOR_MAP_PREVIEW = 15;
+const GRAPH_TIMESTAMP_KEY_RE = /^t\d+$/;
+
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
@@ -78,6 +88,7 @@ export default {
       url.pathname === "/api/peers/verify" ||
       url.pathname === "/api/peers/reconnect" ||
       url.pathname.startsWith("/api/e2e/") ||
+      url.pathname.startsWith("/api/graph/") ||
       url.pathname === "/gun"
     ) {
       return routeToPeerObject(request, env);
@@ -433,6 +444,18 @@ export class GunPeerObject {
       }
     }
 
+    if (url.pathname === "/api/graph/souls" && request.method === "GET") {
+      return json(await this.graphListSouls(url));
+    }
+
+    if (url.pathname === "/api/graph/node" && request.method === "GET") {
+      return json(await this.graphGetNode(url));
+    }
+
+    if (url.pathname === "/api/graph/subgraph" && request.method === "GET") {
+      return json(await this.graphSubgraph(url));
+    }
+
     if (url.pathname === "/gun") {
       if (request.headers.get("upgrade") === "websocket") {
         return this.handleWebSocket();
@@ -716,6 +739,258 @@ export class GunPeerObject {
       stats: await this.state.storage.get("stats"),
       peerList: await this.state.storage.get("peerList"),
       throughput: await this.state.storage.get("throughput"),
+    };
+  }
+
+  async graphListSouls(url) {
+    const limit = clampInt(
+      url.searchParams.get("limit"),
+      GRAPH_SOULS_DEFAULT_LIMIT,
+      1,
+      GRAPH_SOULS_MAX_LIMIT,
+    );
+    const prefix = url.searchParams.get("prefix") || "";
+    const query = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const sort = url.searchParams.get("sort") || "";
+    const startCursor = url.searchParams.get("cursor") || undefined;
+
+    if (sort === "updated") {
+      return this.graphListSoulsByUpdated(limit, prefix, query);
+    }
+
+    const { souls, cursor, truncated } = await this.collectSoulPaths(
+      limit,
+      prefix,
+      query,
+      startCursor,
+    );
+    const rows = await this.soulPathsToRows(souls);
+    rows.sort((a, b) => a.soul.localeCompare(b.soul));
+    return { souls: rows, cursor, truncated };
+  }
+
+  async graphListSoulsByUpdated(limit, prefix, query) {
+    const candidates = [];
+    let cursor;
+    do {
+      const page = await this.state.storage.list({ prefix: "node:", cursor });
+      const { entries, listComplete, cursor: pageNext } = normalizeStorageListPage(page);
+      for (const entry of entries) {
+        const soul = entry.name.replace(/^node:/, "");
+        if (prefix && !soul.startsWith(prefix)) {
+          continue;
+        }
+        if (query && !soul.toLowerCase().includes(query)) {
+          continue;
+        }
+        const node = await this.state.storage.get(entry.name);
+        if (!nodeHasContent(node)) {
+          continue;
+        }
+        candidates.push({
+          soul,
+          label: nodeLabel(node, soul),
+          updated: nodeUpdated(node),
+        });
+      }
+      if (listComplete) {
+        break;
+      }
+      cursor = pageNext;
+    } while (cursor);
+
+    candidates.sort((a, b) => b.updated - a.updated || a.soul.localeCompare(b.soul));
+    const souls = candidates.slice(0, limit);
+    return {
+      souls,
+      truncated: candidates.length > limit,
+    };
+  }
+
+  async graphGetNode(url) {
+    const soul = (url.searchParams.get("soul") || "").trim();
+    if (!soul) {
+      return { error: "soul required" };
+    }
+
+    const node = await this.state.storage.get(nodeKey(soul));
+    if (!nodeHasContent(node)) {
+      return { error: "not found", soul };
+    }
+
+    const { fields, refs } = summarizeNodeFields(node);
+    return {
+      soul,
+      label: nodeLabel(node, soul),
+      updated: nodeUpdated(node),
+      fields,
+      refs,
+      raw: node,
+    };
+  }
+
+  async soulPathsToRows(soulPaths) {
+    const rows = [];
+    for (const soul of soulPaths) {
+      const node = await this.state.storage.get(nodeKey(soul));
+      if (!nodeHasContent(node)) {
+        continue;
+      }
+      rows.push({
+        soul,
+        label: node ? nodeLabel(node, soul) : soul,
+        updated: node ? nodeUpdated(node) : 0,
+      });
+    }
+    return rows;
+  }
+
+  async graphSubgraph(url) {
+    const maxNodes = clampInt(
+      url.searchParams.get("maxNodes"),
+      GRAPH_SUBGRAPH_DEFAULT_NODES,
+      1,
+      GRAPH_SUBGRAPH_MAX_NODES,
+    );
+    const depth = clampInt(
+      url.searchParams.get("depth"),
+      1,
+      0,
+      GRAPH_SUBGRAPH_MAX_DEPTH,
+    );
+    const prefix = url.searchParams.get("prefix") || "";
+    const rootsParam = url.searchParams.get("roots") || "";
+    let seedSouls = rootsParam
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (!seedSouls.length) {
+      const listed = await this.collectSoulPaths(maxNodes, prefix);
+      seedSouls = listed.souls;
+    }
+
+    return this.buildSubgraph(seedSouls, depth, maxNodes);
+  }
+
+  async collectSoulPaths(limit, prefix = "", query = "", startCursor = undefined) {
+    const souls = [];
+    let cursor = startCursor;
+    let truncated = false;
+    let nextCursor;
+    const q = query.toLowerCase();
+
+    while (souls.length < limit) {
+      const page = await this.state.storage.list({ prefix: "node:", cursor });
+      const { entries, listComplete, cursor: pageNext } = normalizeStorageListPage(page);
+
+      for (const entry of entries) {
+        const soul = entry.name.replace(/^node:/, "");
+        if (prefix && !soul.startsWith(prefix)) {
+          continue;
+        }
+        if (q && !soul.toLowerCase().includes(q)) {
+          continue;
+        }
+        if (!nodeHasContent(await this.state.storage.get(entry.name))) {
+          continue;
+        }
+        souls.push(soul);
+        if (souls.length >= limit) {
+          truncated = true;
+          nextCursor = pageNext;
+          break;
+        }
+      }
+
+      if (souls.length >= limit) {
+        break;
+      }
+      if (listComplete) {
+        break;
+      }
+      cursor = pageNext;
+    }
+
+    return { souls, cursor: truncated ? nextCursor : undefined, truncated };
+  }
+
+  /** @deprecated use collectSoulPaths */
+  async collectSouls(limit, prefix = "", startCursor = undefined) {
+    const result = await this.collectSoulPaths(limit, prefix, "", startCursor);
+    return result;
+  }
+
+  async buildSubgraph(seedSouls, maxDepth, maxNodes) {
+    const nodesMap = new Map();
+    const edges = [];
+    const edgeKeys = new Set();
+    const missingTargets = new Set();
+    let truncated = false;
+
+    const visited = new Set();
+    const queue = [...new Set(seedSouls)].map((soul) => ({ soul, hop: 0 }));
+
+    while (queue.length > 0 && nodesMap.size < maxNodes) {
+      const { soul, hop } = queue.shift();
+      if (nodesMap.has(soul)) {
+        continue;
+      }
+
+      const node = await this.state.storage.get(nodeKey(soul));
+      if (!nodeHasContent(node)) {
+        continue;
+      }
+      visited.add(soul);
+
+      nodesMap.set(soul, {
+        soul,
+        label: nodeLabel(node, soul),
+        fields: nodePreviewFields(node),
+        updated: nodeUpdated(node),
+      });
+
+      for (const edge of extractGunRefs(node, soul)) {
+        const key = `${edge.from}|${edge.field}|${edge.to}`;
+        if (!edgeKeys.has(key)) {
+          edgeKeys.add(key);
+          edges.push(edge);
+        }
+        if (hop < maxDepth) {
+          if (!nodesMap.has(edge.to)) {
+            queue.push({ soul: edge.to, hop: hop + 1 });
+          }
+        } else if (!nodesMap.has(edge.to)) {
+          missingTargets.add(edge.to);
+        }
+      }
+    }
+
+    if (queue.length > 0 && nodesMap.size >= maxNodes) {
+      truncated = true;
+    }
+
+    for (const target of missingTargets) {
+      if (nodesMap.size >= maxNodes) {
+        truncated = true;
+        break;
+      }
+      if (!nodesMap.has(target)) {
+        nodesMap.set(target, {
+          soul: target,
+          label: nodeLabel(null, target),
+          fields: {},
+          updated: 0,
+          ghost: true,
+        });
+      }
+    }
+
+    return {
+      nodes: [...nodesMap.values()],
+      edges,
+      truncated,
+      missingTargets: [...missingTargets],
     };
   }
 
@@ -1091,8 +1366,247 @@ function nodeOldestTimestamp(node) {
   return times.length ? Math.min(...times) : 0;
 }
 
+function nodeUpdated(node) {
+  const states = node._?.[">"] || {};
+  const times = Object.values(states).filter((n) => typeof n === "number");
+  return times.length ? Math.max(...times) : 0;
+}
+
+function nodeHasContent(node) {
+  return Boolean(node && Object.entries(node).some(([field, value]) => field !== "_" && value !== null));
+}
+
+function clampInt(raw, fallback, min, max) {
+  if (raw === null || raw === undefined || raw === "") {
+    return fallback;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function extractRefSoul(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const soul = value["#"];
+  if (typeof soul === "string" && soul) {
+    return soul;
+  }
+  return null;
+}
+
+function extractGunRefs(node, sourceSoul) {
+  const edges = [];
+  for (const [field, value] of Object.entries(node || {})) {
+    if (field === "_") {
+      continue;
+    }
+    collectGunRefEdges(edges, sourceSoul, field, value);
+  }
+  return edges;
+}
+
+function collectGunRefEdges(edges, sourceSoul, field, value, depth = 0) {
+  const target = extractRefSoul(value);
+  if (target) {
+    edges.push({ from: sourceSoul, to: target, field });
+    return;
+  }
+  if (!value || typeof value !== "object" || depth >= 12) {
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      collectGunRefEdges(edges, sourceSoul, `${field}[${index}]`, value[index], depth + 1);
+    }
+    return;
+  }
+  for (const [nestedField, nestedValue] of Object.entries(value)) {
+    collectGunRefEdges(edges, sourceSoul, `${field}.${nestedField}`, nestedValue, depth + 1);
+  }
+}
+
+function truncatePreview(text, maxLen = GRAPH_FIELD_PREVIEW_LEN) {
+  if (typeof text !== "string") {
+    text = String(text);
+  }
+  return text.length > maxLen ? `${text.slice(0, maxLen)}…` : text;
+}
+
+function tryParseJsonValue(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return value;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function isTimestampMapNode(node) {
+  const keys = Object.keys(node || {}).filter((k) => k !== "_");
+  if (keys.length < GRAPH_INSPECTOR_COLLAPSE_AT) {
+    return false;
+  }
+  const tsKeys = keys.filter((k) => GRAPH_TIMESTAMP_KEY_RE.test(k));
+  return tsKeys.length >= keys.length * 0.7;
+}
+
+function summarizeFieldValue(key, value, maxLen = GRAPH_FIELD_PREVIEW_LEN) {
+  const ref = extractRefSoul(value);
+  if (ref) {
+    return {
+      key,
+      type: "ref",
+      preview: ref,
+      ref,
+    };
+  }
+  if (typeof value === "string") {
+    const parsed = tryParseJsonValue(value);
+    if (parsed !== value) {
+      const inner = summarizeFieldValue(key, parsed, maxLen);
+      return { ...inner, key };
+    }
+    return {
+      key,
+      type: "string",
+      preview: truncatePreview(value, maxLen),
+    };
+  }
+  if (typeof value === "number") {
+    return { key, type: "number", preview: String(value) };
+  }
+  if (typeof value === "boolean") {
+    return { key, type: "boolean", preview: String(value) };
+  }
+  if (Array.isArray(value)) {
+    const sample = value.slice(0, 3).map((item) => {
+      const itemRef = extractRefSoul(item);
+      if (itemRef) {
+        return `#${itemRef}`;
+      }
+      if (typeof item === "string") {
+        return truncatePreview(item, 24);
+      }
+      return typeof item;
+    });
+    return {
+      key,
+      type: "array",
+      preview: `${value.length} items`,
+      keyCount: value.length,
+      sampleKeys: sample,
+    };
+  }
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value);
+    return {
+      key,
+      type: "object",
+      preview: `${keys.length} entries`,
+      keyCount: keys.length,
+      sampleKeys: keys.slice(0, 5),
+    };
+  }
+  return { key, type: "string", preview: String(value) };
+}
+
+function summarizeNodeFields(node, maxLen = GRAPH_FIELD_PREVIEW_LEN) {
+  const refs = [];
+  for (const [key, value] of Object.entries(node || {})) {
+    if (key === "_") {
+      continue;
+    }
+    const summary = summarizeFieldValue(key, tryParseJsonValue(value), maxLen);
+    if (summary.type === "ref" && summary.ref) {
+      refs.push({ field: key, to: summary.ref });
+    }
+  }
+
+  if (isTimestampMapNode(node)) {
+    const allKeys = Object.keys(node).filter((k) => k !== "_");
+    const entries = allKeys
+      .sort((a, b) => b.localeCompare(a))
+      .slice(0, GRAPH_INSPECTOR_MAP_PREVIEW)
+      .map((key) => summarizeFieldValue(key, tryParseJsonValue(node[key]), maxLen));
+    return {
+      fields: [{
+        key: "entries",
+        type: "map",
+        preview: `${allKeys.length} timestamp entries (newest first)`,
+        keyCount: allKeys.length,
+        entries,
+      }],
+      refs,
+    };
+  }
+
+  const fields = [];
+  for (const [key, value] of Object.entries(node || {})) {
+    if (key === "_") {
+      continue;
+    }
+    fields.push(summarizeFieldValue(key, tryParseJsonValue(value), maxLen));
+  }
+  fields.sort((a, b) => a.key.localeCompare(b.key));
+  return { fields, refs };
+}
+
+function nodePreviewFields(node, maxLen = GRAPH_FIELD_PREVIEW_LEN) {
+  const fields = {};
+  for (const [field, value] of Object.entries(node || {})) {
+    if (field === "_") {
+      continue;
+    }
+    if (typeof value === "string") {
+      fields[field] = value.length > maxLen ? `${value.slice(0, maxLen)}…` : value;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      fields[field] = value;
+    } else {
+      const ref = extractRefSoul(value);
+      if (ref) {
+        fields[field] = `# → ${ref}`;
+      }
+    }
+  }
+  return fields;
+}
+
+function nodeLabel(node, soul) {
+  for (const [field, value] of Object.entries(node || {})) {
+    if (field === "_") {
+      continue;
+    }
+    if (typeof value === "string" && value.length > 0 && value.length <= 40) {
+      return value;
+    }
+  }
+  const parts = soul.split("/");
+  return parts[parts.length - 1] || soul;
+}
+
 export {
   nodeOldestTimestamp,
+  extractGunRefs,
+  extractRefSoul,
+  nodeLabel,
+  nodePreviewFields,
+  nodeUpdated,
+  nodeHasContent,
+  clampInt,
+  summarizeNodeFields,
+  summarizeFieldValue,
+  tryParseJsonValue,
+  isTimestampMapNode,
 };
 
 async function messageToText(raw) {
@@ -1139,4 +1653,8 @@ if (typeof WebSocketPair !== "undefined" && typeof console !== "undefined" && co
   console.assert(isBlockedHost("10.0.0.5"), "blocks private ip");
   console.assert(normalizePeerUrl("relay.example.com").url.endsWith("/gun"), "normalizes gun path");
   console.assert(nodeOldestTimestamp({ _: { ">": { a: 5, b: 10 } } }) === 5, "oldest node timestamp");
+  console.assert(
+    extractGunRefs({ friend: { "#": "b" } }, "a").length === 1,
+    "extractGunRefs finds soul link",
+  );
 }

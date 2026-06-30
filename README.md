@@ -39,6 +39,10 @@ npm run deploy
 - `/api/peers` - mesh peer list (GET public, POST/DELETE need `PEERS_EDIT_TOKEN` when set)
 - `/api/peers/verify` - probe a gun peer url (POST, no auth)
 - `/api/peers/reconnect` - force server-side mesh reconnect (POST, same auth as peer edits)
+- `/api/graph/souls` - node index (`limit`, `cursor`, `prefix`, `q`, `sort=updated`)
+- `/api/graph/node` - structured node inspector (`soul`)
+- `/api/graph/subgraph` - nodes + reference edges for the explorer (`roots`, `prefix`, `depth`, `maxNodes`)
+- `/explorer.html` - graph explorer UI
 - `/health` - health check
 
 ## persistence
