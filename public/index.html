@@ -19,78 +19,80 @@
         </svg>
     </a>
     <div class="container">
-        <header>
+        <header class="home-header">
             <div class="header-row">
                 <h1>gun.js peer</h1>
                 <div class="header-status">
                     <div class="status-chip" id="statusChip">
                         <span class="status-value" id="statusText">offline</span>
-                    </div>
-                    <div class="status-chip" id="liveClientsBlock">
-                        <span class="status-value" id="liveClients">0</span>
-                        <span class="status-label">connected</span>
+                        <span class="status-latency" id="statusLatency"></span>
                     </div>
                 </div>
             </div>
         </header>
 
         <section>
-            <h2>uptime</h2>
-            <div class="value" id="uptimeDetail">0d 0h 0m 0s</div>
-        </section>
-
-        <section>
-            <h2>connections</h2>
-            <table>
-                <tr>
-                    <td>total sessions</td>
-                    <td id="totalConnections">0</td>
-                </tr>
-            </table>
-        </section>
-
-        <section>
             <h2>throughput</h2>
             <canvas id="throughputGraph"></canvas>
         </section>
 
-        <section>
-            <h2>mesh peers</h2>
-            <p class="section-note">Add a peer — the worker connects automatically and syncs new graph writes both ways (no manual reconnect).</p>
-            <form class="peer-form" id="peerForm">
-                <div class="peer-add-row">
-                    <input type="url" id="peerUrlInput" placeholder="https://relay.example.com/gun" spellcheck="false" autocomplete="off" required>
-                    <button type="submit" id="peerAddBtn">add</button>
-                </div>
-            </form>
-            <p id="peerFormMsg" class="peer-msg"></p>
-            <p id="meshSyncStatus" class="mesh-status"></p>
-            <ul id="peerList" class="peer-list"></ul>
-        </section>
+        <table class="stats-table">
+            <tr>
+                <td>uptime</td>
+                <td id="uptimeDetail">0d 0h 0m 0s</td>
+            </tr>
+            <tr>
+                <td>connected clients</td>
+                <td id="liveClients">0</td>
+            </tr>
+            <tr>
+                <td>total connections</td>
+                <td id="totalConnections">0</td>
+            </tr>
+            <tr>
+                <td><a href="/explorer.html" class="storage-table-link">graph nodes</a></td>
+                <td id="graphNodes">0</td>
+            </tr>
+            <tr>
+                <td>storage used</td>
+                <td id="storageUsed">0 B</td>
+            </tr>
+            <tr>
+                <td>storage limit</td>
+                <td id="storageLimit">10 GB</td>
+            </tr>
+            <tr>
+                <td>backend</td>
+                <td id="storageBackend">sqlite</td>
+            </tr>
+        </table>
+        <p class="section-note" id="storageEvictionNote"></p>
 
-        <section>
-            <h2>storage</h2>
-            <div class="value" id="storageUsed">0 B</div>
-            <table>
-                <tr>
-                    <td>backend</td>
-                    <td id="storageBackend">sqlite</td>
-                </tr>
-                <tr>
-                    <td>graph nodes</td>
-                    <td id="graphNodes">0</td>
-                </tr>
-                <tr>
-                    <td>limit</td>
-                    <td id="storageLimit">10 GB</td>
-                </tr>
-            </table>
-            <p class="section-note" id="storageEvictionNote"></p>
-        </section>
+        <hr class="stats-divider">
 
-        <footer>
-            <span id="lastUpdated">-</span>
-        </footer>
+        <div class="peers-bar">
+            <button type="button" id="peersToggle" class="peers-toggle" aria-expanded="false">
+                <span class="peers-chevron" aria-hidden="true">›</span>
+                <span>peers detail</span>
+            </button>
+            <span id="lastUpdated" class="peers-time">-</span>
+        </div>
+
+        <div id="peersPanel" class="peers-panel" hidden>
+            <section>
+                <h2>mesh peers</h2>
+                <p class="section-note">Add a peer — the worker connects automatically and syncs new graph writes both ways (no manual reconnect).</p>
+                <form class="peer-form" id="peerForm">
+                    <div class="peer-add-row">
+                        <input type="url" id="peerUrlInput" placeholder="https://relay.example.com/gun" spellcheck="false" autocomplete="off" required>
+                        <button type="submit" id="peerAddBtn">add</button>
+                    </div>
+                </form>
+                <p id="peerFormMsg" class="peer-msg"></p>
+                <p id="meshSyncStatus" class="mesh-status"></p>
+                <ul id="peerList" class="peer-list"></ul>
+            </section>
+        </div>
     </div>
 
     <script src="/app.js"></script>

@@ -145,8 +145,14 @@ function redrawThroughputGraph(samples, windowMs = GRAPH_WINDOW_MS) {
     drawThroughputGraph('throughputGraph', samples, windowMs);
 }
 
+function setStatusLatency(ms) {
+    const el = document.getElementById('statusLatency');
+    if (!el) return;
+    el.textContent = ms != null ? `(${String(ms).padStart(3, '0')}ms)` : '';
+}
+
 // Update stats display
-function updateStats(data) {
+function updateStats(data, latencyMs) {
     try {
         const statusChip = document.getElementById('statusChip');
         const statusText = document.getElementById('statusText');
@@ -155,11 +161,13 @@ function updateStats(data) {
             statusChip.classList.add('active');
             statusText.classList.remove('error');
             statusText.textContent = 'online';
+            setStatusLatency(latencyMs);
             graphStatus = 'online';
         } else {
             statusChip.classList.remove('active');
             statusText.classList.remove('error');
             statusText.textContent = 'offline';
+            setStatusLatency(null);
             graphStatus = 'offline';
         }
 
@@ -173,7 +181,6 @@ function updateStats(data) {
             const live = data.connections.live ?? data.connections.current ?? 0;
             document.getElementById('liveClients').textContent = live;
             document.getElementById('totalConnections').textContent = data.connections.total;
-            document.getElementById('liveClientsBlock').classList.toggle('active', live > 0);
         }
 
         if (data.storage) {
@@ -216,11 +223,13 @@ function updateStats(data) {
 }
 
 async function fetchStats() {
+    const t0 = performance.now();
     try {
         const response = await fetch('/api/stats');
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
-        updateStats(data);
+        const latencyMs = Math.round(performance.now() - t0);
+        updateStats(data, latencyMs);
     } catch (error) {
         console.error('Error fetching stats:', error);
         const statusChip = document.getElementById('statusChip');
@@ -228,6 +237,7 @@ async function fetchStats() {
         statusChip.classList.remove('active');
         statusText.classList.add('error');
         statusText.textContent = 'error';
+        setStatusLatency(null);
         graphStatus = 'error';
         redrawThroughputGraph(lastGraph.samples, lastGraph.windowMs);
     }
@@ -263,6 +273,7 @@ window.addEventListener('offline', () => {
     statusChip.classList.remove('active');
     statusText.classList.remove('error');
     statusText.textContent = 'offline';
+    setStatusLatency(null);
     graphStatus = 'offline';
     redrawThroughputGraph(lastGraph.samples, lastGraph.windowMs);
 });
