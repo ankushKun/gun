@@ -100,10 +100,11 @@ function drawThroughputGraph(canvasId, samples, windowMs = GRAPH_WINDOW_MS) {
     ctx.fillRect(0, 0, width, height);
 
     const visible = samples.filter((s) => s.t >= now - windowMs);
+    const colors = GRAPH_COLORS[graphStatus] || GRAPH_COLORS.offline;
 
     if (!visible.length) {
-        ctx.fillStyle = '#666';
         ctx.font = '10px monospace';
+        ctx.fillStyle = colors.msg;
         ctx.fillText('0.0 msg/s · 0 B/s', pad, 15);
         return;
     }
@@ -120,17 +121,24 @@ function drawThroughputGraph(canvasId, samples, windowMs = GRAPH_WINDOW_MS) {
     ctx.lineTo(width, baselineY);
     ctx.stroke();
 
-    drawTimeSeries(ctx, visible, 'msg', baselineY, plotH, msgMax, '#fff', now, windowMs, width);
-    drawTimeSeries(ctx, visible, 'byte', baselineY, plotH, byteMax, '#666', now, windowMs, width);
+    drawTimeSeries(ctx, visible, 'byte', baselineY, plotH, byteMax, colors.byte, now, windowMs, width);
+    drawTimeSeries(ctx, visible, 'msg', baselineY, plotH, msgMax, colors.msg, now, windowMs, width);
 
     ctx.font = '10px monospace';
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = colors.msg;
     ctx.fillText(formatNumberSmart(rollingAverage(msgValues)) + ' msg/s avg', pad, 15);
-    ctx.fillStyle = '#666';
+    ctx.fillStyle = colors.byte;
     ctx.fillText(formatBytes(rollingAverage(byteValues)) + '/s avg', pad, 28);
 }
 
 let lastGraph = { samples: [], windowMs: GRAPH_WINDOW_MS };
+let graphStatus = 'offline';
+
+const GRAPH_COLORS = {
+    online: { msg: '#0f0', byte: '#393' },
+    error: { msg: '#f66', byte: '#933' },
+    offline: { msg: '#fff', byte: '#666' },
+};
 
 function redrawThroughputGraph(samples, windowMs = GRAPH_WINDOW_MS) {
     lastGraph = { samples, windowMs };
@@ -147,10 +155,12 @@ function updateStats(data) {
             statusChip.classList.add('active');
             statusText.classList.remove('error');
             statusText.textContent = 'online';
+            graphStatus = 'online';
         } else {
             statusChip.classList.remove('active');
             statusText.classList.remove('error');
             statusText.textContent = 'offline';
+            graphStatus = 'offline';
         }
 
         if (data.uptime) {
@@ -218,6 +228,8 @@ async function fetchStats() {
         statusChip.classList.remove('active');
         statusText.classList.add('error');
         statusText.textContent = 'error';
+        graphStatus = 'error';
+        redrawThroughputGraph(lastGraph.samples, lastGraph.windowMs);
     }
 }
 
@@ -251,6 +263,8 @@ window.addEventListener('offline', () => {
     statusChip.classList.remove('active');
     statusText.classList.remove('error');
     statusText.textContent = 'offline';
+    graphStatus = 'offline';
+    redrawThroughputGraph(lastGraph.samples, lastGraph.windowMs);
 });
 
 // ponytail: self-check time-based graph x
