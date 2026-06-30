@@ -52,8 +52,70 @@ let refreshTimer;
 let liveRefreshTimer;
 let lastLiveRefresh = 0;
 
+const peer = { gunUrl: null, origin: null };
+
+function peerOrigin() {
+    return peer.origin || location.origin;
+}
+
+function peerGunWsUrl() {
+    if (peer.gunUrl) {
+        const parsed = new URL(peer.gunUrl);
+        parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+        return parsed.toString().replace(/\/$/, "");
+    }
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${location.host}/gun`;
+}
+
+function normalizePeerUrlInput(raw) {
+    if (typeof raw !== "string" || !raw.trim()) {
+        return { ok: false, error: "url required" };
+    }
+    let input = raw.trim();
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+        input = `https://${input}`;
+    }
+    let parsed;
+    try {
+        parsed = new URL(input);
+    } catch {
+        return { ok: false, error: "invalid url" };
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        return { ok: false, error: "only http(s) peer urls allowed" };
+    }
+    let path = parsed.pathname.replace(/\/+$/, "") || "";
+    if (!path.endsWith("/gun")) {
+        path = `${path}/gun`.replace(/\/{2,}/g, "/");
+    }
+    parsed.pathname = path;
+    return { ok: true, url: parsed.toString().replace(/\/$/, "") };
+}
+
+async function verifyGunPeer(url) {
+    const response = await fetch("/api/peers/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+        throw new Error(data.error || "not a valid gun peer");
+    }
+    if (!data.reachable || !data.verified) {
+        throw new Error("peer failed gun verification");
+    }
+    return data.url;
+}
+
+function setActivePeer(gunUrl) {
+    peer.gunUrl = gunUrl;
+    peer.origin = gunUrl ? new URL(gunUrl).origin : null;
+}
+
 function api(path) {
-    return fetch(path).then(async (response) => {
+    return fetch(`${peerOrigin()}${path}`).then(async (response) => {
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.error) throw new Error(data.error || `request failed (${response.status})`);
         return data;
@@ -370,11 +432,9 @@ function draw() {
             ctx.globalAlpha = node.opacity * Math.sqrt(node.pulse);
             ctx.strokeStyle = node.exiting ? COLORS.removing : COLORS.selected;
             ctx.lineWidth = 2.5;
-            for (const offset of [0, 10]) {
-                ctx.beginPath();
-                ctx.arc(point.x, point.y, radius + offset + (1 - node.pulse) * 40, 0, Math.PI * 2);
-                ctx.stroke();
-            }
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, radius + (1 - node.pulse) * 40, 0, Math.PI * 2);
+            ctx.stroke();
         }
         ctx.globalAlpha = (matched ? 1 : 0.15) * node.opacity;
         ctx.fillStyle = node.exiting ? COLORS.nodeExit : node.ghost ? COLORS.nodeGhostFill : COLORS.nodeFill;
@@ -652,7 +712,9 @@ function renderList() {
 }
 
 function renderStatus(message) {
-    document.getElementById("statusBar").textContent = message || [
+    const el = document.getElementById("statusMessage");
+    if (!el) return;
+    el.textContent = message || [
         `${state.graph.nodes.filter((node) => !node.ghost && !node.exiting).length} stored nodes`,
         `${state.graph.edges.filter((edge) => !edge.exiting).length} references`,
         state.graph.nodes.some((node) => node.ghost && !node.exiting) ? `${state.graph.nodes.filter((node) => node.ghost && !node.exiting).length} missing targets` : "",
@@ -730,8 +792,11 @@ async function loadGraph({ fit = false, quiet = false } = {}) {
 
 function connectLive() {
     clearTimeout(liveTimer);
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    liveSocket = new WebSocket(`${protocol}//${location.host}/gun`);
+    if (liveSocket) {
+        liveSocket.close();
+        liveSocket = null;
+    }
+    liveSocket = new WebSocket(peerGunWsUrl());
     liveSocket.addEventListener("open", () => {
         document.getElementById("peerStatus").textContent = "live";
         document.getElementById("peerStatus").className = "explorer-peer online";
@@ -756,13 +821,67 @@ function connectLive() {
     liveSocket.addEventListener("error", () => liveSocket.close());
 }
 
+async function fetchPeerGraph() {
+    const input = document.getElementById("peerUrlInput");
+    const msg = document.getElementById("peerUrlMsg");
+    const normalized = normalizePeerUrlInput(input?.value || "");
+    if (!normalized.ok) {
+        msg.textContent = normalized.error;
+        return;
+    }
+
+    msg.textContent = "validating peer…";
+    try {
+        const gunUrl = normalized.url;
+        const isLocal = new URL(gunUrl).origin === location.origin;
+        if (!isLocal) {
+            await verifyGunPeer(gunUrl);
+        }
+        setActivePeer(isLocal ? null : gunUrl);
+        input.value = gunUrl;
+        msg.textContent = "loading graph…";
+        clearSelection();
+        connectLive();
+        await loadGraph({ quiet: true });
+        msg.textContent = "";
+        document.getElementById("peerUrlForm").hidden = true;
+        document.getElementById("peerUrlToggle").setAttribute("aria-expanded", "false");
+        document.querySelector(".peer-url-chevron").textContent = "<";
+    } catch (error) {
+        msg.textContent = error.message;
+    }
+}
+
+function initPeerUrlPanel() {
+    const toggle = document.getElementById("peerUrlToggle");
+    const form = document.getElementById("peerUrlForm");
+    const chevron = document.querySelector(".peer-url-chevron");
+    if (!toggle || !form) return;
+
+    toggle.addEventListener("click", () => {
+        const open = toggle.getAttribute("aria-expanded") === "true";
+        toggle.setAttribute("aria-expanded", open ? "false" : "true");
+        form.hidden = open;
+        if (chevron) chevron.textContent = open ? "<" : ">";
+        if (!open) document.getElementById("peerUrlMsg").textContent = "";
+    });
+
+    document.getElementById("peerUrlFetch")?.addEventListener("click", fetchPeerGraph);
+    document.getElementById("peerUrlInput")?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            fetchPeerGraph();
+        }
+    });
+}
+
 function init() {
     canvas = document.getElementById("graphCanvas");
     ctx = canvas.getContext("2d");
     bindCanvas();
     new ResizeObserver(resize).observe(canvas);
     document.getElementById("fitBtn").addEventListener("click", fitGraph);
-    document.getElementById("refreshBtn").addEventListener("click", () => loadGraph({ fit: true }));
+    document.getElementById("refreshBtn").addEventListener("click", () => loadGraph());
     document.getElementById("searchInput").addEventListener("input", (event) => {
         state.query = event.target.value.trim().toLowerCase();
         renderList();
@@ -774,6 +893,7 @@ function init() {
         setTimeout(() => { event.target.textContent = "copy soul"; }, 1000);
     });
     document.getElementById("closeInspectorBtn").addEventListener("click", clearSelection);
+    initPeerUrlPanel();
     loadGraph({ fit: true });
     connectLive();
     // ponytail: Gun broadcasts writes; this slow pass only catches storage eviction/removal.

@@ -23,6 +23,11 @@
             <div class="header-row">
                 <h1>gun.js peer</h1>
                 <div class="header-status">
+                    <nav class="site-attribution" aria-label="Attribution">
+                        <a href="https://gun.eco" target="_blank" rel="noopener noreferrer">gun.js</a>
+                        <span aria-hidden="true">·</span>
+                        <a href="https://ankush.one" target="_blank" rel="noopener noreferrer">ankush.one</a>
+                    </nav>
                     <div class="status-chip" id="statusChip">
                         <span class="status-value" id="statusText">offline</span>
                         <span class="status-latency" id="statusLatency"></span>
@@ -36,35 +41,43 @@
             <canvas id="throughputGraph"></canvas>
         </section>
 
-        <table class="stats-table">
-            <tr>
-                <td>uptime</td>
-                <td id="uptimeDetail">0d 0h 0m 0s</td>
-            </tr>
-            <tr>
-                <td>connected clients</td>
-                <td id="liveClients">0</td>
-            </tr>
-            <tr>
-                <td>total connections</td>
-                <td id="totalConnections">0</td>
-            </tr>
-            <tr>
-                <td><a href="/explorer.html" class="storage-table-link">graph nodes</a></td>
-                <td id="graphNodes">0</td>
-            </tr>
-            <tr>
-                <td>storage used</td>
-                <td id="storageUsed">0 B</td>
-            </tr>
-            <tr>
-                <td>storage limit</td>
-                <td id="storageLimit">10 GB</td>
-            </tr>
-            <tr>
-                <td>backend</td>
-                <td id="storageBackend">sqlite</td>
-            </tr>
+        <table class="stats-table" aria-label="Peer statistics">
+            <tbody>
+                <tr>
+                    <td>uptime</td>
+                    <td id="uptimeDetail" class="mono">0d 0h 0m 0s</td>
+                </tr>
+                <tr>
+                    <td>connected clients</td>
+                    <td id="liveClients" class="mono">0</td>
+                </tr>
+                <tr>
+                    <td>total connections</td>
+                    <td id="totalConnections" class="mono">0</td>
+                </tr>
+                <tr>
+                    <td><a href="/explorer.html" class="storage-table-link">graph nodes</a></td>
+                    <td id="graphNodes" class="mono">0</td>
+                </tr>
+                <tr>
+                    <td>storage used</td>
+                    <td>
+                        <span id="storageUsed" class="mono">0 B</span>
+                        <span id="storagePercent" class="storage-percent mono"></span>
+                        <div class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Storage usage">
+                            <div id="storageMeterFill" class="storage-meter__fill"></div>
+                        </div>
+                    </td>
+                </tr>
+                <tr>
+                    <td>storage limit</td>
+                    <td id="storageLimit" class="mono">10 GB</td>
+                </tr>
+                <tr>
+                    <td>backend</td>
+                    <td id="storageBackend" class="mono">sqlite</td>
+                </tr>
+            </tbody>
         </table>
         <p class="section-note" id="storageEvictionNote"></p>
 

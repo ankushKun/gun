@@ -155,6 +155,22 @@ function setStatusLatency(ms) {
     el.textContent = ms != null ? `(${String(ms).padStart(3, '0')}ms)` : '';
 }
 
+function updateStorageMeter(used, limit) {
+    const fill = document.getElementById('storageMeterFill');
+    const percent = document.getElementById('storagePercent');
+    const meter = document.querySelector('.storage-meter');
+    if (!fill || !percent || used == null || !limit) {
+        if (fill) fill.style.width = '0%';
+        if (percent) percent.textContent = '';
+        if (meter) meter.setAttribute('aria-valuenow', '0');
+        return;
+    }
+    const pct = Math.min(100, Math.round((used / limit) * 100));
+    fill.style.width = `${pct}%`;
+    percent.textContent = `${pct}% of limit`;
+    meter.setAttribute('aria-valuenow', String(pct));
+}
+
 // Update stats display
 function updateStats(data, latencyMs) {
     try {
@@ -189,16 +205,17 @@ function updateStats(data, latencyMs) {
 
         if (data.storage) {
             const used = data.storage.bytesUsed;
+            const limit = data.storage.limitBytes;
             document.getElementById('storageUsed').textContent =
                 used != null ? formatBytes(used) : 'unknown';
             document.getElementById('storageBackend').textContent =
                 data.storage.backend || 'sqlite';
             document.getElementById('graphNodes').textContent =
                 data.storage.graphNodes != null ? data.storage.graphNodes : '0';
-            if (data.storage.limitBytes) {
-                document.getElementById('storageLimit').textContent =
-                    formatBytes(data.storage.limitBytes);
+            if (limit) {
+                document.getElementById('storageLimit').textContent = formatBytes(limit);
             }
+            updateStorageMeter(used, limit);
             const note = document.getElementById('storageEvictionNote');
             const evictAt = data.storage.evictAtBytes;
             const evictBytes = data.storage.evictBytes;
