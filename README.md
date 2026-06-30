@@ -36,6 +36,9 @@ npm run deploy
 - `/` - dashboard
 - `/gun` - Gun-compatible WebSocket peer endpoint
 - `/api/stats` - dashboard stats
+- `/api/peers` - mesh peer list (GET public, POST/DELETE need `PEERS_EDIT_TOKEN` when set)
+- `/api/peers/verify` - probe a gun peer url (POST, no auth)
+- `/api/peers/reconnect` - force server-side mesh reconnect (POST, same auth as peer edits)
 - `/health` - health check
 
 ## persistence
