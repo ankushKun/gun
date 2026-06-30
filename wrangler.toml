@@ -11,3 +11,7 @@ class_name = "GunPeerObject"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["GunPeerObject"]
+
+[vars]
+STORAGE_EVICT_AT_BYTES = "9663676416"
+STORAGE_EVICT_BYTES = "1073741824"
