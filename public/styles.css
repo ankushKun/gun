@@ -4,6 +4,121 @@
     box-sizing: border-box;
 }
 
+:root {
+    /* palette */
+    --rich-black: #021b1a;
+    --dark-green: #032221;
+    --bangladesh-green: #03624c;
+    --mountain-meadow: #2cc295;
+    --caribbean-green: #00df81;
+    --anti-flash-white: #f1f7f6;
+    --pine: #06302b;
+    --basil: #0b453a;
+    --forest: #095544;
+    --frog: #17876d;
+    --mint: #2fa98c;
+    --stone: #707d7d;
+    --pistachio: #aacbc4;
+
+    /* semantic — softened for comfortable contrast */
+    --bg: #032221;
+    --bg-raised: #06302b;
+    --bg-surface: #0b453a;
+    --bg-hover: #095544;
+    --bg-input: #082f2a;
+
+    --text: #d5e6e1;
+    --text-muted: #8a9996;
+    --text-faint: #707d7d;
+
+    --accent: #2cc295;
+    --accent-soft: #2fa98c;
+    --accent-dim: #17876d;
+    --accent-glow: rgb(44 194 149 / 40%);
+
+    --border: #0f4a40;
+    --border-subtle: #0b453a;
+
+    --link: #2fa98c;
+    --error: #d4847a;
+    --error-dim: #9a5a52;
+
+    --hover-fg: var(--accent);
+    --hover-bg: var(--bg-hover);
+    --hover-border: var(--accent-dim);
+
+    --graph-bg: #032221;
+    --graph-grid: #0b453a;
+    --graph-line: #0f4a40;
+    --graph-msg: #2cc295;
+    --graph-byte: #17876d;
+    --graph-edge: #17876d;
+    --graph-edge-active: #2fa98c;
+    --graph-node: #d5e6e1;
+    --graph-node-fill: #06302b;
+    --graph-selected: #2cc295;
+    --graph-neighbor: #aacbc4;
+    --graph-ghost: #707d7d;
+    --graph-muted: #0b453a;
+    --graph-removing: #d4847a;
+    --graph-edge-idle: #5a7a72;
+    --graph-node-exit: #2a1515;
+    --graph-node-ghost-fill: #06302b;
+
+    color-scheme: dark;
+}
+
+/* sitewide: all links, buttons, and disclosure toggles share one hover */
+a:any-link {
+    transition: color 0.12s ease;
+}
+
+:is(
+    a:any-link,
+    a.explorer-back,
+    td:first-child a.storage-table-link,
+    #inspectorFields article > a
+):is(:hover, :focus-visible) {
+    color: var(--hover-fg);
+}
+
+.github-corner:any-link:is(:hover, :focus-visible) svg {
+    fill: var(--hover-fg);
+}
+
+button {
+    transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+button:not(:disabled):not(.explorer-node-row):is(:hover, :focus-visible) {
+    color: var(--hover-fg);
+}
+
+button:not(:disabled):not(.peers-toggle):not(.explorer-node-row):is(:hover, :focus-visible) {
+    border-color: var(--hover-border);
+}
+
+summary {
+    transition: color 0.12s ease;
+}
+
+summary:is(:hover, :focus-visible) {
+    color: var(--hover-fg);
+}
+
+.explorer-node-row:not(:disabled):is(:hover, :focus-visible) {
+    background: var(--hover-bg) !important;
+}
+
+.explorer-node-row:is(:hover, :focus-visible) strong {
+    color: var(--hover-fg);
+}
+
+.peer-form input:is(:focus, :focus-visible),
+.explorer-sidebar input:is(:focus, :focus-visible) {
+    border-color: var(--hover-border);
+}
+
 input:focus,
 input:focus-visible,
 button:focus,
@@ -15,16 +130,46 @@ textarea:focus-visible {
 }
 
 input,
-button,
 textarea {
     -webkit-appearance: none;
     appearance: none;
 }
 
+button,
+input:is([type="button"], [type="submit"], [type="reset"], [type="checkbox"], [type="radio"]) {
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+button:disabled,
+input:is([type="button"], [type="submit"], [type="reset"]):disabled {
+    cursor: not-allowed !important;
+}
+
+/* ponytail: JS toggles .cursor-pointer on <html> — beats nested hit-target flicker */
+html.cursor-pointer,
+html.cursor-pointer * {
+    cursor: pointer !important;
+}
+
+#graphCanvas {
+    cursor: grab !important;
+}
+
+#graphCanvas.is-pointer {
+    cursor: pointer !important;
+}
+
+/* descendants must not steal hit-testing from the control */
+:is(a[href], button) *,
+summary * {
+    pointer-events: none;
+}
+
 body {
     font-family: monospace;
-    background: #000;
-    color: #fff;
+    background: var(--bg);
+    color: var(--text);
     padding: 20px;
     line-height: 1.6;
 }
@@ -37,7 +182,7 @@ body {
 header {
     margin-bottom: 40px;
     padding-bottom: 10px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border);
 }
 
 .home-header {
@@ -55,13 +200,9 @@ header {
     display: inline-block;
     margin-top: 4px;
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     text-decoration: none;
     text-transform: uppercase;
-}
-
-.explorer-back:hover {
-    color: #0f0;
 }
 
 .header-status {
@@ -81,13 +222,13 @@ header {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #333;
+    background: var(--text-faint);
     flex-shrink: 0;
 }
 
 .status-chip.active .status-dot {
-    background: #0f0;
-    box-shadow: 0 0 6px #0f0;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent-glow);
 }
 
 .status-value,
@@ -99,31 +240,31 @@ header {
 }
 
 .status-value {
-    color: #fff;
+    color: var(--text);
 }
 
 .status-label {
-    color: #666;
+    color: var(--text-muted);
 }
 
 .status-chip.active .status-value {
-    color: #666;
+    color: var(--text-muted);
 }
 
 #statusChip.active .status-value {
-    color: #0f0;
+    color: var(--accent);
 }
 
 .status-latency {
     font-size: 12px;
     line-height: 1;
-    color: #666;
+    color: var(--text-muted);
     text-transform: none;
     letter-spacing: 0;
 }
 
 #statusChip.active .status-latency {
-    color: #666;
+    color: var(--text-muted);
 }
 
 h1 {
@@ -135,12 +276,12 @@ h2 {
     font-size: 12px;
     font-weight: normal;
     text-transform: uppercase;
-    color: #666;
+    color: var(--text-muted);
     margin-bottom: 10px;
 }
 
 #statusText.error {
-    color: #f66;
+    color: var(--error);
 }
 
 section {
@@ -156,7 +297,8 @@ canvas {
     display: block;
     width: 100%;
     height: 120px;
-    border: 1px solid #333;
+    border: 1px solid var(--border);
+    background: var(--graph-bg);
 }
 
 table {
@@ -166,11 +308,11 @@ table {
 
 td {
     padding: 5px 0;
-    border-bottom: 1px solid #111;
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 td:first-child {
-    color: #666;
+    color: var(--text-muted);
     white-space: nowrap;
 }
 
@@ -189,7 +331,7 @@ td:last-child {
 
 .stats-divider {
     border: 0;
-    border-top: 1px solid #333;
+    border-top: 1px solid var(--border);
     margin: 24px 0 12px;
 }
 
@@ -207,16 +349,11 @@ td:last-child {
     padding: 0;
     border: 0;
     background: transparent;
-    color: #666;
+    color: var(--text-muted);
     font-family: inherit;
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    cursor: pointer;
-}
-
-.peers-toggle:hover {
-    color: #fff;
 }
 
 .peers-chevron {
@@ -232,7 +369,7 @@ td:last-child {
 
 .peers-time {
     font-size: 10px;
-    color: #666;
+    color: var(--text-muted);
     flex-shrink: 0;
 }
 
@@ -242,7 +379,7 @@ td:last-child {
 
 .section-note {
     font-size: 11px;
-    color: #666;
+    color: var(--text-faint);
     margin-bottom: 12px;
 }
 
@@ -251,9 +388,9 @@ td:last-child {
     flex: 1;
     min-width: 0;
     padding: 8px 10px;
-    background: #000;
-    border: 1px solid #333;
-    color: #fff;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
     font-family: inherit;
     font-size: 12px;
 }
@@ -262,7 +399,7 @@ td:last-child {
 .peer-form input[type="url"]:focus-visible,
 .peer-form input[type="password"]:focus,
 .peer-form input[type="password"]:focus-visible {
-    border: 1px solid #fff;
+    outline: none;
 }
 
 .peer-form input[type="password"] {
@@ -278,39 +415,26 @@ td:last-child {
 
 .peer-add-row button,
 .peer-remove {
-    background: #000;
-    border: 1px solid #444;
-    color: #fff;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
     font-family: inherit;
     font-size: 11px;
     padding: 8px 14px;
-    cursor: pointer;
     text-transform: uppercase;
     white-space: nowrap;
-}
-
-.peer-add-row button:hover,
-.peer-remove:hover {
-    border-color: #666;
-}
-
-.peer-add-row button:focus,
-.peer-add-row button:focus-visible,
-.peer-remove:focus,
-.peer-remove:focus-visible {
-    border: 1px solid #fff;
 }
 
 .peer-msg,
 .mesh-status {
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     margin: 10px 0;
     min-height: 1.2em;
 }
 
 .mesh-status.ok {
-    color: #0f0;
+    color: var(--accent);
 }
 
 .peer-token-row {
@@ -320,7 +444,7 @@ td:last-child {
 .peer-token-row label {
     display: block;
     font-size: 11px;
-    color: #666;
+    color: var(--text-muted);
     text-transform: uppercase;
     margin-bottom: 4px;
 }
@@ -335,7 +459,7 @@ td:last-child {
     grid-template-columns: 1fr auto;
     gap: 4px 12px;
     padding: 10px 0;
-    border-bottom: 1px solid #111;
+    border-bottom: 1px solid var(--border-subtle);
     align-items: center;
 }
 
@@ -347,7 +471,7 @@ td:last-child {
 .peer-meta {
     grid-column: 1;
     font-size: 10px;
-    color: #555;
+    color: var(--text-faint);
 }
 
 .peer-remove {
@@ -357,12 +481,12 @@ td:last-child {
 
 .peer-empty {
     font-size: 11px;
-    color: #555;
+    color: var(--text-faint);
     padding: 8px 0;
 }
 
 .peer-item.peer-connected .peer-url {
-    color: #cfc;
+    color: var(--pistachio);
 }
 
 .github-corner {
@@ -374,11 +498,12 @@ td:last-child {
 }
 
 .github-corner svg {
-    fill: #fff;
-    color: #151513;
+    fill: var(--pistachio);
+    color: var(--rich-black);
     display: block;
     width: 80px;
     height: 80px;
+    transition: fill 0.12s ease;
 }
 
 .github-corner .octo-arm {
@@ -408,6 +533,8 @@ td:last-child {
     height: 100vh;
     padding: 0;
     overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
 }
 
 .explorer-shell {
@@ -424,7 +551,8 @@ td:last-child {
     min-height: 72px;
     margin-bottom: 0;
     padding: 12px 18px;
-    border-bottom: 1px solid #242424;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-raised);
 }
 
 .explorer-topbar h1 {
@@ -444,24 +572,17 @@ td:last-child {
 }
 
 .explorer-body button {
-    border: 1px solid #333;
-    background: #050505;
-    color: #bbb;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-muted);
     padding: 6px 9px;
     font: 10px monospace;
     text-transform: uppercase;
-    cursor: pointer;
-}
-
-.explorer-body button:hover,
-.explorer-body button:focus-visible {
-    border-color: #0f0;
-    color: #fff;
 }
 
 .explorer-peer {
     min-width: 70px;
-    color: #777;
+    color: var(--text-faint);
     font-size: 10px;
     text-align: right;
     text-transform: uppercase;
@@ -474,24 +595,24 @@ td:last-child {
     height: 6px;
     margin-right: 6px;
     border-radius: 50%;
-    background: #555;
+    background: var(--text-faint);
 }
 
 .explorer-peer.online {
-    color: #0f0;
+    color: var(--accent);
 }
 
 .explorer-peer.online::before {
-    background: #0f0;
-    box-shadow: 0 0 7px #0f0;
+    background: var(--accent);
+    box-shadow: 0 0 7px var(--accent-glow);
 }
 
 .explorer-peer.error {
-    color: #f66;
+    color: var(--error);
 }
 
 .explorer-peer.error::before {
-    background: #f66;
+    background: var(--error);
 }
 
 .explorer-main {
@@ -505,20 +626,20 @@ td:last-child {
 .explorer-inspector {
     min-height: 0;
     overflow: auto;
-    background: #020202;
+    background: var(--bg-raised);
 }
 
 .explorer-sidebar {
     display: flex;
     flex-direction: column;
     padding: 14px 10px 0;
-    border-right: 1px solid #242424;
+    border-right: 1px solid var(--border);
 }
 
 .explorer-sidebar label,
 .explorer-inspector-head > span,
 .explorer-inspector-empty span {
-    color: #666;
+    color: var(--text-muted);
     font-size: 10px;
     letter-spacing: .08em;
     text-transform: uppercase;
@@ -528,14 +649,10 @@ td:last-child {
     width: 100%;
     margin: 10px 0;
     padding: 8px;
-    border: 1px solid #292929;
-    background: #000;
-    color: #fff;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text);
     font: 11px monospace;
-}
-
-.explorer-sidebar input:focus {
-    border-color: #777;
 }
 
 .explorer-node-list {
@@ -549,24 +666,19 @@ td:last-child {
     width: 100%;
     padding: 9px 12px !important;
     border: 0 !important;
-    border-top: 1px solid #111 !important;
+    border-top: 1px solid var(--border-subtle) !important;
     background: transparent !important;
     text-align: left;
     text-transform: none !important;
 }
 
 .explorer-node-row:last-child {
-    border-bottom: 1px solid #111 !important;
-}
-
-.explorer-node-row:hover,
-.explorer-node-row:focus-visible {
-    background: #071008 !important;
+    border-bottom: 1px solid var(--border-subtle) !important;
 }
 
 .explorer-node-row.selected {
-    box-shadow: inset 2px 0 #0f0;
-    background: #071408 !important;
+    box-shadow: inset 2px 0 var(--accent);
+    background: var(--bg-surface) !important;
 }
 
 .explorer-node-row strong,
@@ -577,20 +689,20 @@ td:last-child {
 }
 
 .explorer-node-row strong {
-    color: #ddd;
+    color: var(--text);
     font-weight: normal;
     font-size: 11px;
 }
 
 .explorer-node-row span {
     margin-top: 2px;
-    color: #555;
+    color: var(--text-faint);
     font-size: 9px;
 }
 
 .explorer-no-results {
     padding: 12px;
-    color: #555;
+    color: var(--text-faint);
     font-size: 10px;
 }
 
@@ -600,19 +712,18 @@ td:last-child {
     min-height: 0;
     margin-bottom: 0;
     overflow: hidden;
-    background-color: #000;
+    background-color: var(--graph-bg);
 }
 
 #graphCanvas {
     width: 100%;
     height: 100%;
     border: 0;
-    cursor: grab;
     touch-action: none;
 }
 
 #graphCanvas:active {
-    cursor: grabbing;
+    cursor: grabbing !important;
 }
 
 .explorer-legend {
@@ -622,9 +733,9 @@ td:last-child {
     display: flex;
     gap: 12px;
     padding: 6px 8px;
-    border: 1px solid #222;
-    background: rgb(0 0 0 / 80%);
-    color: #666;
+    border: 1px solid var(--border);
+    background: rgb(3 34 33 / 85%);
+    color: var(--text-muted);
     font-size: 9px;
     text-transform: uppercase;
 }
@@ -638,18 +749,18 @@ td:last-child {
 .legend-node {
     width: 8px;
     height: 8px;
-    border: 1px solid #d8e1da;
+    border: 1px solid var(--graph-node);
     border-radius: 50%;
 }
 
 .legend-node--ghost {
-    border-color: #666;
+    border-color: var(--graph-ghost);
     border-style: dashed;
 }
 
 .legend-edge {
     width: 13px;
-    border-top: 1px solid #285e32;
+    border-top: 1px solid var(--graph-edge);
 }
 
 .explorer-tooltip {
@@ -657,8 +768,8 @@ td:last-child {
     z-index: 20;
     max-width: 260px;
     padding: 8px 10px;
-    border: 1px solid #315f39;
-    background: rgb(0 0 0 / 94%);
+    border: 1px solid var(--accent-dim);
+    background: rgb(3 34 33 / 94%);
     pointer-events: none;
 }
 
@@ -670,14 +781,14 @@ td:last-child {
 }
 
 .explorer-tooltip strong {
-    color: #bfffc9;
+    color: var(--pistachio);
     font-size: 11px;
 }
 
 .explorer-tooltip span,
 .explorer-tooltip small {
     margin-top: 3px;
-    color: #777;
+    color: var(--text-muted);
     font-size: 9px;
 }
 
@@ -685,20 +796,20 @@ td:last-child {
     position: absolute;
     inset: 50% auto auto 50%;
     transform: translate(-50%, -50%);
-    color: #555;
+    color: var(--text-faint);
     font-size: 11px;
 }
 
 .explorer-inspector {
     padding: 14px;
-    border-left: 1px solid #242424;
+    border-left: 1px solid var(--border);
 }
 
 .explorer-inspector-empty {
     display: grid;
     place-content: center;
     height: 100%;
-    color: #444;
+    color: var(--text-faint);
     font-size: 10px;
     text-align: center;
 }
@@ -723,7 +834,7 @@ td:last-child {
 
 .explorer-inspector h2 {
     margin: 0 0 4px;
-    color: #e7ffe9;
+    color: var(--text);
     font-size: 17px;
     text-transform: none;
     overflow-wrap: anywhere;
@@ -732,7 +843,7 @@ td:last-child {
 #inspectorSoul,
 #inspectorMeta {
     overflow-wrap: anywhere;
-    color: #666;
+    color: var(--text-muted);
     font-size: 9px;
 }
 
@@ -742,7 +853,7 @@ td:last-child {
 
 #inspectorFields article {
     padding: 10px 0;
-    border-top: 1px solid #171717;
+    border-top: 1px solid var(--border-subtle);
 }
 
 #inspectorFields article > div {
@@ -754,14 +865,14 @@ td:last-child {
 }
 
 #inspectorFields strong {
-    color: #aaa;
+    color: var(--text-muted);
     font-size: 10px;
     font-weight: normal;
     overflow-wrap: anywhere;
 }
 
 #inspectorFields article > div span {
-    color: #48634d;
+    color: var(--accent-dim);
     font-size: 8px;
     text-transform: uppercase;
 }
@@ -773,7 +884,7 @@ td:last-child {
 .explorer-ref {
     display: block;
     max-width: 100%;
-    color: #eee;
+    color: var(--text);
     font-size: 10px;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
@@ -781,7 +892,7 @@ td:last-child {
 
 #inspectorFields article > a,
 .explorer-ref {
-    color: #65ff7e;
+    color: var(--link);
     text-transform: none;
 }
 
@@ -796,8 +907,8 @@ td:last-child {
     display: block;
     width: 100%;
     max-height: 230px;
-    border: 1px solid #222;
-    background: #080808;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
     object-fit: contain;
 }
 
@@ -808,8 +919,7 @@ td:last-child {
 
 #inspectorFields summary,
 .explorer-raw summary {
-    color: #888;
-    cursor: pointer;
+    color: var(--text-muted);
 }
 
 #inspectorFields pre,
@@ -818,16 +928,16 @@ td:last-child {
     margin-top: 6px;
     padding: 8px;
     overflow: auto;
-    border: 1px solid #1c1c1c;
-    background: #000;
-    color: #aaa;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-input);
+    color: var(--text-muted);
     font-size: 9px;
     white-space: pre-wrap;
 }
 
 .explorer-raw {
     margin-top: 18px;
-    border-top: 1px solid #222;
+    border-top: 1px solid var(--border);
     padding-top: 10px;
     font-size: 9px;
 }
@@ -836,8 +946,9 @@ td:last-child {
     min-height: 31px;
     margin-top: 0;
     padding: 8px 14px;
-    border-top: 1px solid #242424;
-    color: #555;
+    border-top: 1px solid var(--border);
+    background: var(--bg-raised);
+    color: var(--text-faint);
     font-size: 9px;
     text-transform: uppercase;
 }
@@ -858,7 +969,7 @@ td:last-child {
         right: 0;
         bottom: 31px;
         width: min(330px, 78vw);
-        box-shadow: -12px 0 30px #000;
+        box-shadow: -12px 0 30px rgb(2 27 26 / 80%);
     }
 
     .explorer-inspector:not(.open) {
@@ -887,7 +998,7 @@ td:last-child {
 
     .explorer-sidebar {
         border-right: 0;
-        border-bottom: 1px solid #242424;
+        border-bottom: 1px solid var(--border);
     }
 
     .explorer-inspector {
