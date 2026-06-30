@@ -152,7 +152,14 @@ function redrawThroughputGraph(samples, windowMs = GRAPH_WINDOW_MS) {
 function setStatusLatency(ms) {
     const el = document.getElementById('statusLatency');
     if (!el) return;
-    el.textContent = ms != null ? `(${String(ms).padStart(3, '0')}ms)` : '';
+    el.classList.remove('is-warn', 'is-slow');
+    if (ms == null) {
+        el.textContent = '';
+        return;
+    }
+    el.textContent = `[${String(ms).padStart(3, '_')}ms]`;
+    if (ms > 500) el.classList.add('is-slow');
+    else if (ms > 200) el.classList.add('is-warn');
 }
 
 function updateStorageMeter(used, limit) {
