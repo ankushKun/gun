@@ -70,6 +70,14 @@ function routeToPeerObject(request, env) {
   return env.GUN_PEER.get(id).fetch(request);
 }
 
+function detectStorageBackend(storage) {
+  // ponytail: CF exposes sqlite vs legacy kv only via storage.sql; no local/prod string
+  if (storage?.sql) {
+    return "durable-object-sqlite";
+  }
+  return "durable-object-kv";
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -88,6 +96,7 @@ export default {
       url.pathname === "/api/peers/verify" ||
       url.pathname === "/api/peers/reconnect" ||
       url.pathname.startsWith("/api/e2e/") ||
+      url.pathname === "/api/storage" ||
       url.pathname.startsWith("/api/graph/") ||
       url.pathname === "/gun"
     ) {
@@ -424,6 +433,13 @@ export class GunPeerObject {
         return json({ error: "unauthorized" }, { status: 401 });
       }
       return json(await this.removePeerRequest(url));
+    }
+
+    if (url.pathname === "/api/storage" && request.method === "DELETE") {
+      if (!requireEditAuth(request, this.env)) {
+        return json({ error: "unauthorized" }, { status: 401 });
+      }
+      return json(await this.e2eReset());
     }
 
     if (url.pathname.startsWith("/api/e2e/")) {
@@ -859,18 +875,25 @@ export class GunPeerObject {
       GRAPH_SUBGRAPH_MAX_DEPTH,
     );
     const prefix = url.searchParams.get("prefix") || "";
+    const query = (url.searchParams.get("q") || "").trim().toLowerCase();
     const rootsParam = url.searchParams.get("roots") || "";
+    let truncated = false;
     let seedSouls = rootsParam
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
 
     if (!seedSouls.length) {
-      const listed = await this.collectSoulPaths(maxNodes, prefix);
-      seedSouls = listed.souls;
+      const listed = await this.graphListSoulsByUpdated(maxNodes, prefix, query);
+      seedSouls = listed.souls.map((row) => (typeof row === "string" ? row : row.soul));
+      truncated = listed.truncated;
     }
 
-    return this.buildSubgraph(seedSouls, depth, maxNodes);
+    const subgraph = await this.buildSubgraph(seedSouls, depth, maxNodes);
+    if (truncated) {
+      subgraph.truncated = true;
+    }
+    return subgraph;
   }
 
   async collectSoulPaths(limit, prefix = "", query = "", startCursor = undefined) {
@@ -1289,7 +1312,8 @@ export class GunPeerObject {
         samples: this.throughput?.samples ?? [],
       },
       storage: {
-        backend: "sqlite",
+        backend: detectStorageBackend(this.state.storage),
+        durableObjectClass: "GunPeerObject",
         persistent: true,
         bytesUsed,
         limitBytes: STORAGE_LIMIT_BYTES,

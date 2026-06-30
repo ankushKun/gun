@@ -51,6 +51,7 @@ let liveTimer;
 let refreshTimer;
 let liveRefreshTimer;
 let lastLiveRefresh = 0;
+let searchTimer;
 
 const peer = { gunUrl: null, origin: null };
 
@@ -754,9 +755,15 @@ async function loadGraph({ fit = false, quiet = false } = {}) {
     state.loading = true;
     if (!quiet) renderStatus("loading graph…");
     try {
+        const q = state.query;
+        const depth = q ? 1 : 0;
+        const graphPath = `/api/graph/subgraph?maxNodes=${MAX_NODES}&depth=${depth}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
+        const soulsPath = q
+            ? `/api/graph/souls?limit=500&sort=updated&q=${encodeURIComponent(q)}`
+            : "/api/graph/souls?limit=500&sort=updated";
         const [souls, graph, stats] = await Promise.all([
-            api("/api/graph/souls?limit=500&sort=updated"),
-            api(`/api/graph/subgraph?maxNodes=${MAX_NODES}&depth=0`),
+            api(soulsPath),
+            api(graphPath),
             api("/api/stats"),
         ]);
         state.rows = souls.souls || [];
@@ -778,7 +785,7 @@ async function loadGraph({ fit = false, quiet = false } = {}) {
         renderList();
         renderInspector();
         restartSimulation(state.ready ? 0.45 : 1);
-        if (fit || !state.ready) fitGraph();
+        if (fit || !state.ready || q) fitGraph();
         state.ready = true;
         renderStatus();
     } catch (error) {
@@ -885,7 +892,8 @@ function init() {
     document.getElementById("searchInput").addEventListener("input", (event) => {
         state.query = event.target.value.trim().toLowerCase();
         renderList();
-        draw();
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => loadGraph({ fit: true, quiet: true }), 250);
     });
     document.getElementById("copySoulBtn").addEventListener("click", async (event) => {
         await navigator.clipboard.writeText(state.selected);
