@@ -29,7 +29,7 @@ function renderPeerList() {
     list.innerHTML = '';
 
     if (!meshPeers.length) {
-        list.innerHTML = '<li class="peer-empty">no remote peers — worker mesh idle</li>';
+        list.innerHTML = '<li class="peer-empty">no peers yet</li>';
         return;
     }
 
@@ -39,7 +39,7 @@ function renderPeerList() {
         const status = peer.meshStatus || 'disconnected';
         li.innerHTML =
             `<span class="peer-url">${escapeHtml(peer.url)}</span>` +
-            `<span class="peer-meta">${meshStatusLabel(status)} · added ${formatPeerTime(peer.addedAt)}</span>` +
+            `<span class="peer-meta">${meshStatusLabel(status)}</span>` +
             `<button type="button" class="peer-remove" data-id="${peer.id}">remove</button>`;
         li.classList.toggle('peer-connected', status === 'connected');
         list.appendChild(li);
@@ -57,19 +57,14 @@ window.renderMeshStatus = function renderMeshStatus(mesh) {
     const connected = mesh.connected ?? meshPeers.filter((p) => p.meshStatus === 'connected').length;
     const total = meshPeers.length;
     if (!total) {
-        setMeshStatus('server mesh idle (no remote peers)', false);
+        setMeshStatus('', false);
         return;
     }
-    setMeshStatus(`server mesh: ${connected}/${total} connected`, connected > 0);
+    setMeshStatus(`${connected}/${total} connected`, connected > 0);
 };
 
 function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
-}
-
-function formatPeerTime(ts) {
-    if (!ts) return '—';
-    return new Date(ts).toLocaleString();
 }
 
 async function loadPeers() {
@@ -77,16 +72,20 @@ async function loadPeers() {
     if (!res.ok) throw new Error('failed to load peers');
     const data = await res.json();
     window.renderMeshStatus(data);
-    toggleTokenField(data.editProtected);
     return data;
 }
 
-function toggleTokenField(protectedEdits) {
-    const row = document.getElementById('peerTokenRow');
-    if (row) row.hidden = !protectedEdits;
+function promptEditToken() {
+    sessionStorage.removeItem(PEER_TOKEN_KEY);
+    const token = window.prompt('Edit token required to change peers:');
+    if (!token?.trim()) {
+        return null;
+    }
+    sessionStorage.setItem(PEER_TOKEN_KEY, token.trim());
+    return token.trim();
 }
 
-async function verifyPeerUrl() {
+async function addPeerUrl(retry = true) {
     const input = document.getElementById('peerUrlInput');
     const msg = document.getElementById('peerFormMsg');
     const url = input.value.trim();
@@ -95,43 +94,7 @@ async function verifyPeerUrl() {
         return;
     }
 
-    msg.textContent = 'checking…';
-    try {
-        const res = await fetch('/api/peers/verify', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ url })
-        });
-        const data = await res.json();
-        if (!data.ok) {
-            msg.textContent = data.error || 'invalid url';
-            return;
-        }
-        if (!data.reachable) {
-            msg.textContent = data.error || 'unreachable';
-            return;
-        }
-        if (!data.verified) {
-            msg.textContent = `reachable (HTTP ${data.status}) but no gun peer signals — proceed with caution`;
-            return;
-        }
-        msg.textContent = `verified gun peer at ${data.url}`;
-        input.value = data.url;
-    } catch {
-        msg.textContent = 'verify failed';
-    }
-}
-
-async function addPeerUrl() {
-    const input = document.getElementById('peerUrlInput');
-    const msg = document.getElementById('peerFormMsg');
-    const url = input.value.trim();
-    if (!url) {
-        msg.textContent = 'enter a url';
-        return;
-    }
-
-    msg.textContent = 'adding…';
+    msg.textContent = 'checking and adding…';
     try {
         const res = await fetch('/api/peers', {
             method: 'POST',
@@ -140,15 +103,22 @@ async function addPeerUrl() {
         });
         const data = await res.json();
         if (res.status === 401) {
-            msg.textContent = 'edit token required — enter token below';
-            document.getElementById('peerTokenRow').hidden = false;
+            if (!retry) {
+                sessionStorage.removeItem(PEER_TOKEN_KEY);
+                msg.textContent = 'wrong edit token';
+                return;
+            }
+            if (promptEditToken()) {
+                return addPeerUrl(false);
+            }
+            msg.textContent = 'edit token required';
             return;
         }
         if (!data.ok) {
             msg.textContent = data.error || 'could not add peer';
             return;
         }
-        msg.textContent = 'peer added — worker connecting in background';
+        msg.textContent = 'added — worker connecting automatically';
         input.value = '';
         await loadPeers();
     } catch {
@@ -156,7 +126,7 @@ async function addPeerUrl() {
     }
 }
 
-async function removePeer(id) {
+async function removePeer(id, retry = true) {
     const msg = document.getElementById('peerFormMsg');
     msg.textContent = 'removing…';
     try {
@@ -166,54 +136,33 @@ async function removePeer(id) {
         });
         const data = await res.json();
         if (res.status === 401) {
+            if (!retry) {
+                sessionStorage.removeItem(PEER_TOKEN_KEY);
+                msg.textContent = 'wrong edit token';
+                return;
+            }
+            if (promptEditToken()) {
+                return removePeer(id, false);
+            }
             msg.textContent = 'edit token required';
-            document.getElementById('peerTokenRow').hidden = false;
             return;
         }
         if (!data.ok) {
             msg.textContent = data.error || 'remove failed';
             return;
         }
-        msg.textContent = 'peer removed';
+        msg.textContent = '';
         await loadPeers();
     } catch {
         msg.textContent = 'remove failed';
     }
 }
 
-async function reconnectMesh() {
-    const msg = document.getElementById('peerFormMsg');
-    msg.textContent = 'reconnecting server mesh…';
-    try {
-        const res = await fetch('/api/peers/reconnect', {
-            method: 'POST',
-            headers: peerAuthHeaders()
-        });
-        const data = await res.json();
-        if (res.status === 401) {
-            msg.textContent = 'edit token required';
-            document.getElementById('peerTokenRow').hidden = false;
-            return;
-        }
-        msg.textContent = 'server mesh reconnect triggered';
-        window.renderMeshStatus({ peers: data.peers, connected: data.peers.filter((p) => p.meshStatus === 'connected').length });
-    } catch {
-        msg.textContent = 'reconnect failed';
-    }
-}
-
 function initPeers() {
-    document.getElementById('peerVerifyBtn')?.addEventListener('click', verifyPeerUrl);
-    document.getElementById('peerAddBtn')?.addEventListener('click', addPeerUrl);
-    document.getElementById('meshSyncBtn')?.addEventListener('click', reconnectMesh);
-
-    const tokenInput = document.getElementById('peerTokenInput');
-    tokenInput?.addEventListener('change', () => {
-        sessionStorage.setItem(PEER_TOKEN_KEY, tokenInput.value.trim());
+    document.getElementById('peerForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        addPeerUrl();
     });
-    if (tokenInput && sessionStorage.getItem(PEER_TOKEN_KEY)) {
-        tokenInput.value = sessionStorage.getItem(PEER_TOKEN_KEY);
-    }
 
     loadPeers().catch(() => {
         const msg = document.getElementById('peerFormMsg');

@@ -1019,6 +1019,7 @@ export class GunPeerObject {
         bytesUsed,
         limitBytes: STORAGE_LIMIT_BYTES,
         evictAtBytes: this.storageLimits().evictAt,
+        evictBytes: this.storageLimits().evictBytes,
         graphNodes: this.stats.graphNodes,
         lastEviction: this.stats.lastEviction ?? null,
       },

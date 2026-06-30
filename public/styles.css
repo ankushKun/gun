@@ -4,6 +4,23 @@
     box-sizing: border-box;
 }
 
+input:focus,
+input:focus-visible,
+button:focus,
+button:focus-visible,
+textarea:focus,
+textarea:focus-visible {
+    outline: none;
+    box-shadow: none;
+}
+
+input,
+button,
+textarea {
+    -webkit-appearance: none;
+    appearance: none;
+}
+
 body {
     font-family: monospace;
     background: #000;
@@ -153,37 +170,57 @@ footer {
 
 .peer-form input[type="url"],
 .peer-form input[type="password"] {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     padding: 8px 10px;
     background: #000;
     border: 1px solid #333;
     color: #fff;
     font-family: inherit;
     font-size: 12px;
+}
+
+.peer-form input[type="url"]:focus,
+.peer-form input[type="url"]:focus-visible,
+.peer-form input[type="password"]:focus,
+.peer-form input[type="password"]:focus-visible {
+    border: 1px solid #fff;
+}
+
+.peer-form input[type="password"] {
+    width: 100%;
     margin-bottom: 8px;
 }
 
-.peer-actions {
+.peer-add-row {
     display: flex;
-    flex-wrap: wrap;
     gap: 8px;
+    margin-bottom: 8px;
 }
 
-.peer-actions button,
+.peer-add-row button,
 .peer-remove {
     background: #000;
     border: 1px solid #444;
     color: #fff;
     font-family: inherit;
     font-size: 11px;
-    padding: 6px 10px;
+    padding: 8px 14px;
     cursor: pointer;
     text-transform: uppercase;
+    white-space: nowrap;
 }
 
-.peer-actions button:hover,
+.peer-add-row button:hover,
 .peer-remove:hover {
     border-color: #666;
+}
+
+.peer-add-row button:focus,
+.peer-add-row button:focus-visible,
+.peer-remove:focus,
+.peer-remove:focus-visible {
+    border: 1px solid #fff;
 }
 
 .peer-msg,

@@ -47,21 +47,15 @@
 
         <section>
             <h2>mesh peers</h2>
-            <p class="section-note">Peers sync on the worker — this server opens outbound WebSocket connections to each listed relay. New writes relay automatically; works best with other gun-compatible peers like this one.</p>
-            <form class="peer-form" onsubmit="return false">
-                <input type="url" id="peerUrlInput" placeholder="https://relay.example.com/gun" spellcheck="false" autocomplete="off">
-                <div class="peer-actions">
-                    <button type="button" id="peerVerifyBtn">verify</button>
-                    <button type="button" id="peerAddBtn">add</button>
-                    <button type="button" id="meshSyncBtn">reconnect mesh</button>
+            <p class="section-note">Add a peer — the worker connects automatically and syncs new graph writes both ways (no manual reconnect).</p>
+            <form class="peer-form" id="peerForm">
+                <div class="peer-add-row">
+                    <input type="url" id="peerUrlInput" placeholder="https://relay.example.com/gun" spellcheck="false" autocomplete="off" required>
+                    <button type="submit" id="peerAddBtn">add</button>
                 </div>
             </form>
             <p id="peerFormMsg" class="peer-msg"></p>
-            <p id="meshSyncStatus" class="mesh-status">server mesh idle</p>
-            <div id="peerTokenRow" class="peer-token-row" hidden>
-                <label for="peerTokenInput">edit token</label>
-                <input type="password" id="peerTokenInput" placeholder="PEERS_EDIT_TOKEN" autocomplete="off">
-            </div>
+            <p id="meshSyncStatus" class="mesh-status"></p>
             <ul id="peerList" class="peer-list"></ul>
         </section>
 
@@ -82,6 +76,7 @@
                     <td id="storageLimit">10 GB</td>
                 </tr>
             </table>
+            <p class="section-note" id="storageEvictionNote"></p>
         </section>
 
         <footer>
