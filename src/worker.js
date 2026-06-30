@@ -632,7 +632,7 @@ export class GunPeerObject {
         candidates.push({
           key: entry.name,
           age: nodeOldestTimestamp(node),
-          size: JSON.stringify(node).length,
+          size: nodeBytes(node),
         });
       }
       cursor = listComplete ? undefined : nextCursor;
@@ -971,6 +971,7 @@ export class GunPeerObject {
         label: nodeLabel(node, soul),
         fields: nodePreviewFields(node),
         updated: nodeUpdated(node),
+        bytes: nodeBytes(node),
       });
 
       for (const edge of extractGunRefs(node, soul)) {
@@ -1400,6 +1401,10 @@ function nodeHasContent(node) {
   return Boolean(node && Object.entries(node).some(([field, value]) => field !== "_" && value !== null));
 }
 
+function nodeBytes(node) {
+  return JSON.stringify(node).length;
+}
+
 function clampInt(raw, fallback, min, max) {
   if (raw === null || raw === undefined || raw === "") {
     return fallback;
@@ -1626,6 +1631,7 @@ export {
   nodePreviewFields,
   nodeUpdated,
   nodeHasContent,
+  nodeBytes,
   clampInt,
   summarizeNodeFields,
   summarizeFieldValue,

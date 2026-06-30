@@ -9,6 +9,7 @@ import {
   summarizeFieldValue,
   isTimestampMapNode,
   nodeHasContent,
+  nodeBytes,
 } from "../src/worker.js";
 import * as helpers from "./helpers.js";
 
@@ -25,6 +26,11 @@ describe("graph helpers", () => {
   it("keeps Gun tombstones stored but hides empty nodes from the explorer", () => {
     expect(nodeHasContent({ _: { "#": "a" }, name: null })).toBe(false);
     expect(nodeHasContent({ _: { "#": "a" }, count: 0 })).toBe(true);
+  });
+
+  it("nodeBytes measures serialized node size", () => {
+    const node = { _: { "#": "a" }, name: "Alice" };
+    expect(nodeBytes(node)).toBe(JSON.stringify(node).length);
   });
 
   it("extractGunRefs finds direct and nested references", () => {
@@ -137,6 +143,8 @@ describe("graph API", () => {
 
     const data = await helpers.fetchSubgraph({ roots: "graph/alice", depth: "1" });
     expect(data.nodes.map((n) => n.soul).sort()).toEqual(["graph/alice", "graph/bob"]);
+    const alice = data.nodes.find((n) => n.soul === "graph/alice");
+    expect(alice.bytes).toBeGreaterThan(0);
   });
 
   it("lists souls with prefix and substring search", async () => {

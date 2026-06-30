@@ -621,6 +621,15 @@ function bindCanvas() {
     }, { passive: false });
 }
 
+function formatBytes(bytes) {
+    if (bytes == null || !Number.isFinite(bytes)) return "unknown";
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
+    return `${parseFloat((bytes / k ** i).toFixed(bytes < 10 && i > 0 ? 1 : 0))} ${sizes[i]}`;
+}
+
 function renderTooltip(event, node) {
     const tooltip = document.getElementById("graphTooltip");
     if (!node) {
@@ -633,7 +642,9 @@ function renderTooltip(event, node) {
     const soul = document.createElement("span");
     soul.textContent = node.soul;
     const meta = document.createElement("small");
-    meta.textContent = node.ghost ? "referenced but not stored" : `${Object.keys(node.fields || {}).length} preview fields · ${node.degree} relations`;
+    meta.textContent = node.ghost
+        ? "referenced but not stored"
+        : `${Object.keys(node.fields || {}).length} preview fields · ${node.degree} relations · ${formatBytes(node.bytes)}`;
     tooltip.append(title, soul, meta);
     tooltip.style.left = `${event.clientX + 14}px`;
     tooltip.style.top = `${event.clientY + 14}px`;
