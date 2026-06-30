@@ -82,17 +82,40 @@ export class GunPeerObject {
         totalConnections: stats.totalConnections || 0,
         messagesProcessed: stats.messagesProcessed || 0,
         bytesTransferred: stats.bytesTransferred || 0,
+        graphNodes: stats.graphNodes || 0,
       };
+    } else {
+      this.stats = {
+        startTime: this.startTime,
+        totalConnections: 0,
+        messagesProcessed: 0,
+        bytesTransferred: 0,
+        graphNodes: 0,
+      };
+      await this.persistStats();
+    }
+
+    await this.syncGraphNodeCountIfNeeded();
+  }
+
+  async syncGraphNodeCountIfNeeded() {
+    if (this.stats.graphNodes > 0) {
       return;
     }
 
-    this.stats = {
-      startTime: this.startTime,
-      totalConnections: 0,
-      messagesProcessed: 0,
-      bytesTransferred: 0,
-    };
-    await this.persistStats();
+    // ponytail: one O(n) list on cold start when counter missing; not per poll
+    let count = 0;
+    let cursor;
+    do {
+      const page = await this.state.storage.list({ prefix: "node:", cursor });
+      count += page.keys.length;
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+
+    if (count > 0) {
+      this.stats.graphNodes = count;
+      await this.persistStats();
+    }
   }
 
   async fetch(request) {
@@ -221,7 +244,11 @@ export class GunPeerObject {
         continue;
       }
 
-      const existingNode = (await this.state.storage.get(nodeKey(soul))) || {
+      const stored = await this.state.storage.get(nodeKey(soul));
+      if (!stored) {
+        this.stats.graphNodes += 1;
+      }
+      const existingNode = stored || {
         _: { "#": soul, ">": {} },
       };
       const merged = mergeNode(soul, existingNode, incomingNode);
@@ -282,6 +309,8 @@ export class GunPeerObject {
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
     const days = Math.floor(hours / 24);
+    const live = this.connections.size;
+    const bytesUsed = this.state.storage.sql?.databaseSize ?? null;
 
     return {
       status: "online",
@@ -294,17 +323,21 @@ export class GunPeerObject {
         formatted: `${days}d ${hours % 24}h ${minutes % 60}m ${seconds % 60}s`,
       },
       connections: {
-        current: this.connections.size,
+        live,
+        current: live,
         total: this.stats.totalConnections,
-        activePeers: this.connections.size,
+        activePeers: live,
       },
       performance: {
         messagesProcessed: this.stats.messagesProcessed,
         bytesTransferred: this.stats.bytesTransferred,
       },
       storage: {
-        backend: "durable-object-storage",
+        backend: "sqlite",
         persistent: true,
+        bytesUsed,
+        limitBytes: 10 * 1024 * 1024 * 1024,
+        graphNodes: this.stats.graphNodes,
       },
     };
   }

@@ -3,9 +3,9 @@ const history = {
     messages: [],
     bytes: [],
     maxPoints: 60,
-    lastMessages: 0,
-    lastBytes: 0,
-    lastTime: Date.now()
+    lastMessages: null,
+    lastBytes: null,
+    lastTime: null
 };
 
 // Format bytes to human readable
@@ -36,56 +36,105 @@ function formatNumberSmart(num) {
     return num.toFixed(1);
 }
 
-// Draw graph
-function drawGraph(canvasId, data, label, isBytes = false) {
+// Scale canvas for device pixel ratio
+function setupCanvas(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, width: w, height: h };
+}
+
+function graphScale(values) {
+    const peak = Math.max(...values, 0);
+    if (peak === 0) return 1;
+    return peak * 1.15;
+}
+
+function rollingAverage(values, window = 5) {
+    const slice = values.slice(-window);
+    if (!slice.length) return 0;
+    return slice.reduce((a, b) => a + b, 0) / slice.length;
+}
+
+function drawSeries(ctx, data, xStep, baselineY, plotH, yMax, strokeStyle) {
+    if (data.length < 2) return;
+    ctx.strokeStyle = strokeStyle;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+        const x = i * xStep;
+        const y = baselineY - (data[i] / yMax) * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+}
+
+// Dual-series throughput graph — each series uses its own Y scale
+function drawThroughputGraph(canvasId, messages, bytes) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
 
-    const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
+    const { ctx, width, height } = setupCanvas(canvas);
+    const pad = 5;
+    const labelH = 28;
+    const plotTop = pad + labelH;
+    const plotH = height - plotTop - pad;
+    const baselineY = height - pad;
 
-    // Clear
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, width, height);
 
-    if (data.length < 2) return;
+    const msgVisible = messages.slice(-history.maxPoints);
+    const byteVisible = bytes.slice(-history.maxPoints);
+    const pointCount = Math.max(msgVisible.length, byteVisible.length);
 
-    // Find max value for scaling
-    const max = Math.max(...data, 1);
+    if (pointCount < 1) {
+        ctx.fillStyle = '#666';
+        ctx.font = '10px monospace';
+        ctx.fillText('0.0 msg/s · 0 B/s', pad, 15);
+        return;
+    }
 
-    // Draw line
-    ctx.strokeStyle = '#fff';
+    const msgMax = graphScale(msgVisible);
+    const byteMax = graphScale(byteVisible);
+    const xStep = width / (history.maxPoints - 1);
+    const nowX = (pointCount - 1) * xStep;
+
+    ctx.strokeStyle = '#222';
     ctx.lineWidth = 1;
     ctx.beginPath();
-
-    const step = width / (history.maxPoints - 1);
-    const startIdx = Math.max(0, data.length - history.maxPoints);
-
-    for (let i = 0; i < data.length - startIdx; i++) {
-        const x = i * step;
-        const y = height - (data[startIdx + i] / max * (height - 10)) - 5;
-
-        if (i === 0) {
-            ctx.moveTo(x, y);
-        } else {
-            ctx.lineTo(x, y);
-        }
-    }
-
+    ctx.moveTo(0, baselineY);
+    ctx.lineTo(width, baselineY);
     ctx.stroke();
 
-    // Draw current value
-    ctx.fillStyle = '#666';
-    ctx.font = '10px monospace';
-    const current = data[data.length - 1] || 0;
-    let displayValue;
-    if (isBytes) {
-        displayValue = formatBytes(current) + '/s';
-    } else {
-        displayValue = formatNumberSmart(current) + ' ' + label;
+    if (pointCount < history.maxPoints) {
+        ctx.strokeStyle = '#333';
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(nowX, plotTop);
+        ctx.lineTo(nowX, baselineY);
+        ctx.stroke();
+        ctx.setLineDash([]);
     }
-    ctx.fillText(displayValue, 5, 15);
+
+    drawSeries(ctx, msgVisible, xStep, baselineY, plotH, msgMax, '#fff');
+    drawSeries(ctx, byteVisible, xStep, baselineY, plotH, byteMax, '#666');
+
+    const msgAvg = rollingAverage(msgVisible);
+    const byteAvg = rollingAverage(byteVisible);
+    ctx.font = '10px monospace';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(formatNumberSmart(msgAvg) + ' msg/s avg', pad, 15);
+    ctx.fillStyle = '#666';
+    ctx.fillText(formatBytes(byteAvg) + '/s avg', pad, 28);
 }
 
 // Update stats display
@@ -108,48 +157,65 @@ function updateStats(data) {
                 `${u.days}d ${u.hours % 24}h ${u.minutes % 60}m ${u.seconds % 60}s`;
         }
 
-        // Connections
+        // Live connected clients
         if (data.connections) {
-            document.getElementById('currentConnections').textContent = data.connections.current;
+            const live = data.connections.live ?? data.connections.current ?? 0;
+            document.getElementById('liveClients').textContent = live;
             document.getElementById('totalConnections').textContent = data.connections.total;
-            document.getElementById('activePeers').textContent = data.connections.activePeers;
+            document.getElementById('liveClientsBlock').classList.toggle('active', live > 0);
+        }
+
+        // Storage
+        if (data.storage) {
+            const used = data.storage.bytesUsed;
+            document.getElementById('storageUsed').textContent =
+                used != null ? formatBytes(used) : 'unknown';
+            document.getElementById('storageBackend').textContent =
+                data.storage.backend || 'sqlite';
+            document.getElementById('graphNodes').textContent =
+                data.storage.graphNodes != null ? data.storage.graphNodes : '0';
+            if (data.storage.limitBytes) {
+                document.getElementById('storageLimit').textContent =
+                    formatBytes(data.storage.limitBytes);
+            }
         }
 
         // Performance - calculate rates
         if (data.performance) {
             const now = Date.now();
-            const timeDiff = (now - history.lastTime) / 1000; // seconds
+            const perf = data.performance;
 
-            // Calculate per-second rates
-            const msgDiff = data.performance.messagesProcessed - history.lastMessages;
-            const byteDiff = data.performance.bytesTransferred - history.lastBytes;
+            // First sample seeds counters — avoids one giant rate from server totals
+            if (history.lastTime === null) {
+                history.lastMessages = perf.messagesProcessed;
+                history.lastBytes = perf.bytesTransferred;
+                history.lastTime = now;
+            } else {
+                const timeDiff = (now - history.lastTime) / 1000;
+                // ponytail: gap > 2 min → reseed; avoids one flat or averaged point after idle
+                if (timeDiff > 120) {
+                    history.lastMessages = perf.messagesProcessed;
+                    history.lastBytes = perf.bytesTransferred;
+                    history.lastTime = now;
+                } else if (timeDiff > 0) {
+                    const msgRate = (perf.messagesProcessed - history.lastMessages) / timeDiff;
+                    const byteRate = (perf.bytesTransferred - history.lastBytes) / timeDiff;
 
-            const msgRate = timeDiff > 0 ? msgDiff / timeDiff : 0;
-            const byteRate = timeDiff > 0 ? byteDiff / timeDiff : 0;
+                    history.messages.push(msgRate);
+                    history.bytes.push(byteRate);
 
-            // Update history
-            history.messages.push(msgRate);
-            history.bytes.push(byteRate);
+                    if (history.messages.length > history.maxPoints) {
+                        history.messages.shift();
+                        history.bytes.shift();
+                    }
 
-            if (history.messages.length > history.maxPoints) {
-                history.messages.shift();
-                history.bytes.shift();
+                    history.lastMessages = perf.messagesProcessed;
+                    history.lastBytes = perf.bytesTransferred;
+                    history.lastTime = now;
+                }
             }
 
-            // Update tracking
-            history.lastMessages = data.performance.messagesProcessed;
-            history.lastBytes = data.performance.bytesTransferred;
-            history.lastTime = now;
-
-            // Draw graphs
-            drawGraph('messagesGraph', history.messages, 'msg/s');
-            drawGraph('bytesGraph', history.bytes, '', true);
-
-            document.getElementById('heapUsed').textContent =
-                data.storage && data.storage.persistent ? 'persistent' : 'unknown';
-            document.getElementById('heapTotal').textContent =
-                data.storage && data.storage.backend ? data.storage.backend : 'durable object';
-            document.getElementById('rss').textContent = 'n/a';
+            drawThroughputGraph('throughputGraph', history.messages, history.bytes);
         }
 
         // Last updated
@@ -180,6 +246,10 @@ function init() {
     fetchStats();
     setInterval(fetchStats, 1000);
 
+    window.addEventListener('resize', () => {
+        drawThroughputGraph('throughputGraph', history.messages, history.bytes);
+    });
+
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) fetchStats();
     });
@@ -198,3 +268,13 @@ window.addEventListener('offline', () => {
     statusText.classList.remove('online');
     statusText.textContent = 'offline';
 });
+
+// ponytail: self-check graph slot math
+if (typeof console !== 'undefined' && console.assert) {
+    const slots = history.maxPoints;
+    const w = 580;
+    const step = w / (slots - 1);
+    console.assert(Math.abs((slots - 1) * step - w) < 0.01, 'graph x slots should span full width');
+    console.assert(graphScale([0, 0, 0]) === 1, 'all-zero scale should be 1');
+    console.assert(graphScale([10, 2, 0]) === 11.5, 'scale should add 15% headroom');
+}
