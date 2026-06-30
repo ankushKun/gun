@@ -13,12 +13,15 @@
         <header>
             <div class="header-row">
                 <h1>gun.js peer</h1>
-                <span id="statusText">offline</span>
-            </div>
-            <div class="live-clients" id="liveClientsBlock">
-                <span class="live-dot" id="liveDot" aria-hidden="true"></span>
-                <span class="live-count" id="liveClients">0</span>
-                <span class="live-label">connected</span>
+                <div class="header-status">
+                    <div class="status-chip" id="statusChip">
+                        <span class="status-value" id="statusText">offline</span>
+                    </div>
+                    <div class="status-chip" id="liveClientsBlock">
+                        <span class="status-value" id="liveClients">0</span>
+                        <span class="status-label">connected</span>
+                    </div>
+                </div>
             </div>
         </header>
 
@@ -39,7 +42,27 @@
 
         <section>
             <h2>throughput</h2>
-            <canvas id="throughputGraph" width="580" height="120"></canvas>
+            <canvas id="throughputGraph"></canvas>
+        </section>
+
+        <section>
+            <h2>mesh peers</h2>
+            <p class="section-note">Peers sync on the worker — this server opens outbound WebSocket connections to each listed relay. New writes relay automatically; works best with other gun-compatible peers like this one.</p>
+            <form class="peer-form" onsubmit="return false">
+                <input type="url" id="peerUrlInput" placeholder="https://relay.example.com/gun" spellcheck="false" autocomplete="off">
+                <div class="peer-actions">
+                    <button type="button" id="peerVerifyBtn">verify</button>
+                    <button type="button" id="peerAddBtn">add</button>
+                    <button type="button" id="meshSyncBtn">reconnect mesh</button>
+                </div>
+            </form>
+            <p id="peerFormMsg" class="peer-msg"></p>
+            <p id="meshSyncStatus" class="mesh-status">server mesh idle</p>
+            <div id="peerTokenRow" class="peer-token-row" hidden>
+                <label for="peerTokenInput">edit token</label>
+                <input type="password" id="peerTokenInput" placeholder="PEERS_EDIT_TOKEN" autocomplete="off">
+            </div>
+            <ul id="peerList" class="peer-list"></ul>
         </section>
 
         <section>
@@ -67,6 +90,7 @@
     </div>
 
     <script src="/app.js"></script>
+    <script src="/peers.js"></script>
 </body>
 
 </html>
