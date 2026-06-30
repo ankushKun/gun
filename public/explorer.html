@@ -13,7 +13,12 @@
                 <a href="/" class="explorer-back">← peer dashboard</a>
                 <h1>graph explorer</h1>
             </div>
-            <div class="explorer-actions">
+            <div class="explorer-toolbar">
+                <nav class="site-attribution" aria-label="Attribution">
+                    <a href="https://gun.eco" target="_blank" rel="noopener noreferrer">gun.js</a>
+                    <span aria-hidden="true">·</span>
+                    <a href="https://ankush.one" target="_blank" rel="noopener noreferrer">ankush.one</a>
+                </nav>
                 <button id="fitBtn" type="button">fit graph</button>
                 <button id="refreshBtn" type="button">refresh</button>
                 <span id="peerStatus" class="explorer-peer">connecting</span>
@@ -63,7 +68,20 @@
             </aside>
         </main>
 
-        <footer id="statusBar" class="explorer-status">loading graph…</footer>
+        <footer id="statusBar" class="explorer-status">
+            <span id="statusMessage" class="explorer-status__message">loading graph…</span>
+            <div class="peer-url-panel">
+                <button type="button" id="peerUrlToggle" class="peer-url-toggle" aria-expanded="false">
+                    <span class="peer-url-chevron" aria-hidden="true">&lt;</span>
+                    <span>peer url</span>
+                </button>
+                <div id="peerUrlForm" class="peer-url-form" hidden>
+                    <input type="url" id="peerUrlInput" value="https://gun.ankush.one/gun" spellcheck="false" autocomplete="off">
+                    <button type="button" id="peerUrlFetch">fetch</button>
+                </div>
+                <span id="peerUrlMsg" class="peer-url-msg" aria-live="polite"></span>
+            </div>
+        </footer>
     </div>
 
     <script src="/theme.js"></script>
