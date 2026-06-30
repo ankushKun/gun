@@ -1,6 +1,30 @@
 const MAX_NODES = 220;
-const NODE_RADIUS = 10;
-const PHYSICS_FLOOR = 0.025;
+const NODE_RADIUS = 13;
+const PHYSICS_FLOOR = 0.3;
+const LABEL_GAP = 26;
+
+function nodeMass(degree) {
+    return 1 + Math.sqrt(degree) * 0.5;
+}
+
+function nodeRadius(degree) {
+    return NODE_RADIUS + Math.min(14, Math.sqrt(degree) * 4 + degree * 0.35);
+}
+
+function layoutSpacing(nodeCount) {
+    return 62 + Math.sqrt(Math.max(nodeCount, 1)) * 14;
+}
+
+function initialNodePosition(soul, index, count) {
+    const seed = hash(soul);
+    const ring = layoutSpacing(count) * (0.85 + Math.sqrt(count) * 0.08);
+    const angle = (index / Math.max(count, 1)) * Math.PI * 2 + ((seed % 360) * Math.PI) / 180;
+    const jitter = layoutSpacing(count) * 0.12;
+    return {
+        x: Math.cos(angle) * ring + (((seed & 0xff) / 255) - 0.5) * jitter,
+        y: Math.sin(angle) * ring + ((((seed >>> 8) & 0xff) / 255) - 0.5) * jitter,
+    };
+}
 
 function graphColors() {
     const v = (name) => getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim();
@@ -35,7 +59,19 @@ const state = {
     ready: false,
 };
 
-const view = { x: 0, y: 0, scale: 1 };
+const view = { x: 0, y: 0, scale: 1, baseScale: 1 };
+
+function labelBaseScale() {
+    return view.baseScale || view.scale;
+}
+
+function showNodeLabels() {
+    return view.scale >= labelBaseScale() * 0.9;
+}
+
+function showEdgeLabels(active = false) {
+    return active || view.scale >= labelBaseScale() * 1.1;
+}
 let canvas;
 let ctx;
 let width = 1;
@@ -148,17 +184,17 @@ function searchable(node) {
 function prepareGraph(data, previous = { nodes: [], edges: [] }, animateChanges = previous.nodes.length > 0) {
     const previousNodes = new Map(previous.nodes.map((node) => [node.soul, node]));
     const count = Math.max(data.nodes.length, 1);
-    const nodes = data.nodes.map((node) => {
+    const nodes = data.nodes.map((node, index) => {
         const old = previousNodes.get(node.soul);
-        const seed = hash(node.soul);
-        const spread = 60 + Math.sqrt(count) * 30;
+        const start = initialNodePosition(node.soul, index, count);
         return {
             ...node,
-            x: old?.x ?? (((seed & 0xffff) / 0xffff) - 0.5) * spread * 2,
-            y: old?.y ?? ((((seed >>> 16) & 0xffff) / 0xffff) - 0.5) * spread * 2,
+            x: old?.x ?? start.x,
+            y: old?.y ?? start.y,
             vx: old?.vx ?? 0,
             vy: old?.vy ?? 0,
             radius: NODE_RADIUS,
+            mass: 1,
             degree: 0,
             opacity: old?.opacity ?? 0,
             pulse: !old
@@ -200,60 +236,82 @@ function prepareGraph(data, previous = { nodes: [], edges: [] }, animateChanges 
     }
     for (const siblings of pairs.values()) {
         siblings.forEach((edge, index) => {
-            const offset = (index - (siblings.length - 1) / 2) * 18;
+            const offset = (index - (siblings.length - 1) / 2) * 24;
             edge.curve = offset * (edge.from < edge.to ? 1 : -1);
         });
     }
-    for (const node of nodes) node.radius = NODE_RADIUS + Math.min(8, Math.sqrt(node.degree) * 2.5);
+    for (const node of nodes) {
+        node.radius = nodeRadius(node.degree);
+        node.mass = nodeMass(node.degree);
+    }
     return { nodes, edges, truncated: Boolean(data.truncated) };
 }
 
 function tickPhysics(nodes, edges, strength, pinned) {
     // ponytail: O(n²) is fast enough for the 220-node cap; use a quadtree if that cap grows.
+    const k = layoutSpacing(nodes.length);
     for (let i = 0; i < nodes.length; i++) {
         const a = nodes[i];
         for (let j = i + 1; j < nodes.length; j++) {
             const b = nodes[j];
             let dx = b.x - a.x;
             let dy = b.y - a.y;
-            const d2 = Math.max(dx * dx + dy * dy, 25);
-            const force = (900 * strength) / d2;
-            const distance = Math.sqrt(d2);
-            dx /= distance;
-            dy /= distance;
-            a.vx -= dx * force;
-            a.vy -= dy * force;
-            b.vx += dx * force;
-            b.vy += dy * force;
+            let dist = Math.hypot(dx, dy);
+            const minDist = a.radius + b.radius + LABEL_GAP;
+            if (dist < 0.01) {
+                dx = (hash(a.soul) % 100 - 50) * 0.002;
+                dy = (hash(b.soul) % 100 - 50) * 0.002;
+                dist = Math.hypot(dx, dy) || 0.01;
+            }
+            let force;
+            if (dist < minDist) {
+                force = ((minDist - dist) / dist) * 0.85 * strength;
+            } else {
+                force = ((k * k) / (dist * dist)) * 0.48 * strength;
+            }
+            const fx = (dx / dist) * force;
+            const fy = (dy / dist) * force;
+            a.vx -= fx / a.mass;
+            a.vy -= fy / a.mass;
+            b.vx += fx / b.mass;
+            b.vy += fy / b.mass;
         }
     }
     for (const edge of edges) {
+        if (edge.exiting) continue;
         const dx = edge.target.x - edge.source.x;
         const dy = edge.target.y - edge.source.y;
-        const distance = Math.max(Math.hypot(dx, dy), 1);
-        const force = (distance - 105) * 0.008 * strength;
-        edge.source.vx += (dx / distance) * force;
-        edge.source.vy += (dy / distance) * force;
-        edge.target.vx -= (dx / distance) * force;
-        edge.target.vy -= (dy / distance) * force;
+        const dist = Math.max(Math.hypot(dx, dy), 1);
+        const hub = Math.sqrt((edge.source.degree + 1) * (edge.target.degree + 1));
+        const rest = k * (0.95 + hub * 0.035);
+        const spring = (0.01 * strength) / Math.sqrt(edge.source.degree + edge.target.degree + 2);
+        const force = (dist - rest) * spring;
+        edge.source.vx += (dx / dist) * force / edge.source.mass;
+        edge.source.vy += (dy / dist) * force / edge.source.mass;
+        edge.target.vx -= (dx / dist) * force / edge.target.mass;
+        edge.target.vy -= (dy / dist) * force / edge.target.mass;
     }
     for (const node of nodes) {
         if (node === pinned) {
             node.vx = node.vy = 0;
             continue;
         }
-        node.vx += -node.x * 0.0015 * strength;
-        node.vy += -node.y * 0.0015 * strength;
-        node.vx *= 0.84;
-        node.vy *= 0.84;
+        node.vx += (-node.x * 0.0011 * strength) / node.mass;
+        node.vy += (-node.y * 0.0011 * strength) / node.mass;
+        const damp = dragging ? 0.965 : 0.945;
+        node.vx *= damp;
+        node.vy *= damp;
+        if (!dragging && Math.hypot(node.vx, node.vy) < 0.03) {
+            node.vx = node.vy = 0;
+        }
         node.x += node.vx;
         node.y += node.vy;
     }
 }
 
-function settleGraph(graph, iterations = 140) {
+function settleGraph(graph, iterations = 220) {
     for (let i = 0; i < iterations; i++) {
-        tickPhysics(graph.nodes, graph.edges, Math.max(0.08, 1 - i / iterations));
+        tickPhysics(graph.nodes, graph.edges, Math.max(0.1, 1 - i / iterations));
     }
     for (const node of graph.nodes) node.vx = node.vy = 0;
     return graph;
@@ -297,7 +355,8 @@ function activeSouls() {
 function simulate() {
     const nodes = state.graph.nodes;
     const edges = state.graph.edges;
-    alpha = Math.max(PHYSICS_FLOOR, alpha * 0.965);
+    if (dragging) alpha = 1;
+    else if (alpha > PHYSICS_FLOOR) alpha = Math.max(PHYSICS_FLOOR, alpha * 0.996);
 
     for (const node of nodes) {
         node.opacity = Math.max(0, Math.min(1, node.opacity + (node.exiting ? -0.014 : 0.02)));
@@ -312,18 +371,19 @@ function simulate() {
 }
 
 function restartSimulation(value = 1) {
-    alpha = Math.max(alpha, value);
+    if (value >= 1) alpha = 1;
+    else if (alpha < value) alpha = value;
     if (!frame) frame = requestAnimationFrame(simulate);
 }
 
-function drawArrow(edge, active) {
+function drawArrow(edge, active, dim = 1) {
     const from = screen(edge.source);
     const to = screen(edge.target);
     if (edge.source === edge.target) {
         const radius = Math.max(13, edge.source.radius * view.scale + 7);
         ctx.strokeStyle = edge.exiting ? COLORS.removing : active ? COLORS.edgeActive : COLORS.edge;
         ctx.fillStyle = ctx.strokeStyle;
-        ctx.globalAlpha = (active ? 0.9 : 0.55) * edge.opacity;
+        ctx.globalAlpha = (active ? 0.9 : 0.55) * edge.opacity * dim;
         ctx.lineWidth = active ? 1.5 : 1;
         ctx.beginPath();
         ctx.arc(from.x + radius * 0.65, from.y - radius * 0.65, radius, 0.35 * Math.PI, 1.9 * Math.PI);
@@ -334,9 +394,9 @@ function drawArrow(edge, active) {
         ctx.lineTo(from.x + radius * 1.5, from.y - radius * 0.65);
         ctx.closePath();
         ctx.fill();
-        if (active || view.scale > 1.25) {
+        if (showEdgeLabels(active)) {
             ctx.fillStyle = edge.exiting ? COLORS.removing : active ? COLORS.neighbor : COLORS.edgeIdle;
-            ctx.font = "9px monospace";
+            ctx.font = "11px monospace";
             ctx.textAlign = "left";
             ctx.fillText(edge.field, from.x + radius * 1.2, from.y - radius * 1.4);
         }
@@ -359,7 +419,7 @@ function drawArrow(edge, active) {
 
     ctx.strokeStyle = edge.exiting ? COLORS.removing : active ? COLORS.edgeActive : COLORS.edge;
     ctx.fillStyle = ctx.strokeStyle;
-    ctx.globalAlpha = (active ? 0.9 : 0.55) * edge.opacity;
+    ctx.globalAlpha = (active ? 0.9 : 0.55) * edge.opacity * dim;
     ctx.lineWidth = active ? 1.5 : 1;
     ctx.beginPath();
     ctx.moveTo(x1, y1);
@@ -375,10 +435,10 @@ function drawArrow(edge, active) {
     ctx.closePath();
     ctx.fill();
 
-    if ((active || view.scale > 1.25) && distance > 55) {
-        ctx.globalAlpha = (active ? 1 : 0.65) * edge.opacity;
+    if (showEdgeLabels(active) && distance > 55) {
+        ctx.globalAlpha = (active ? 1 : 0.65) * edge.opacity * dim;
         ctx.fillStyle = edge.exiting ? COLORS.removing : active ? COLORS.neighbor : COLORS.edgeIdle;
-        ctx.font = "9px monospace";
+        ctx.font = "11px monospace";
         ctx.textAlign = "center";
         ctx.fillText(edge.field, cx, cy - 5);
     }
@@ -413,6 +473,7 @@ function draw() {
     ctx.clearRect(0, 0, width, height);
     drawGrid();
     const active = activeSouls();
+    const focusing = Boolean(state.selected);
     const filtering = Boolean(state.query);
     const matches = filtering
         ? new Set(state.graph.nodes.filter((node) => searchable(node).includes(state.query)).map((node) => node.soul))
@@ -420,7 +481,8 @@ function draw() {
 
     for (const edge of state.graph.edges) {
         const edgeActive = state.selected && (edge.from === state.selected || edge.to === state.selected);
-        drawArrow(edge, edgeActive);
+        const edgeDim = focusing && !(active.has(edge.from) && active.has(edge.to)) ? 0.5 : 1;
+        drawArrow(edge, edgeActive, edgeDim);
     }
 
     for (const node of state.graph.nodes) {
@@ -428,7 +490,8 @@ function draw() {
         const selected = node.soul === state.selected;
         const neighbor = active.has(node.soul);
         const matched = !matches || matches.has(node.soul);
-        const radius = Math.max(4, node.radius * view.scale);
+        const selectDim = focusing && !neighbor ? 0.5 : 1;
+        const radius = Math.max(5, node.radius * view.scale);
         if (node.pulse > 0) {
             ctx.globalAlpha = node.opacity * Math.sqrt(node.pulse);
             ctx.strokeStyle = node.exiting ? COLORS.removing : COLORS.selected;
@@ -437,7 +500,7 @@ function draw() {
             ctx.arc(point.x, point.y, radius + (1 - node.pulse) * 40, 0, Math.PI * 2);
             ctx.stroke();
         }
-        ctx.globalAlpha = (matched ? 1 : 0.15) * node.opacity;
+        ctx.globalAlpha = (matched ? 1 : 0.15) * node.opacity * selectDim;
         ctx.fillStyle = node.exiting ? COLORS.nodeExit : node.ghost ? COLORS.nodeGhostFill : COLORS.nodeFill;
         ctx.strokeStyle = node.exiting ? COLORS.removing : selected ? COLORS.selected : node.ghost ? COLORS.ghost : neighbor ? COLORS.neighbor : COLORS.node;
         ctx.lineWidth = selected ? 2.5 : 1.25;
@@ -448,8 +511,8 @@ function draw() {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        if (selected || hovered === node || view.scale > 0.72) {
-            ctx.globalAlpha = (matched ? 1 : 0.2) * node.opacity;
+        if (!node.exiting && showNodeLabels()) {
+            ctx.globalAlpha = (matched ? 1 : 0.2) * node.opacity * selectDim;
             ctx.fillStyle = node.exiting ? COLORS.removing : selected ? COLORS.selected : COLORS.text;
             ctx.font = `${selected ? "bold " : ""}10px monospace`;
             ctx.textAlign = "center";
@@ -467,6 +530,7 @@ function fitGraph() {
     const minY = Math.min(...nodes.map((node) => node.y - node.radius));
     const maxY = Math.max(...nodes.map((node) => node.y + node.radius));
     view.scale = Math.min(2, Math.max(0.15, Math.min((width - 100) / Math.max(1, maxX - minX), (height - 100) / Math.max(1, maxY - minY))));
+    view.baseScale = view.scale;
     view.x = -((minX + maxX) / 2) * view.scale;
     view.y = -((minY + maxY) / 2) * view.scale;
     draw();
@@ -496,6 +560,7 @@ function bindCanvas() {
         if (node) {
             dragging = node;
             node.vx = node.vy = 0;
+            restartSimulation(1);
         } else {
             panning = true;
         }
@@ -784,7 +849,7 @@ async function loadGraph({ fit = false, quiet = false } = {}) {
         }
         renderList();
         renderInspector();
-        restartSimulation(state.ready ? 0.45 : 1);
+        restartSimulation(quiet ? 0 : 1);
         if (fit || !state.ready || q) fitGraph();
         state.ready = true;
         renderStatus();
@@ -882,6 +947,72 @@ function initPeerUrlPanel() {
     });
 }
 
+const PANEL_STATE_KEY = "explorer-panels";
+
+function loadPanelState() {
+    try {
+        const raw = localStorage.getItem(PANEL_STATE_KEY);
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        return {
+            sidebar: data.sidebar !== false,
+            inspector: data.inspector !== false,
+        };
+    } catch {
+        return null;
+    }
+}
+
+function savePanelState(sidebarOpen, inspectorOpen) {
+    try {
+        localStorage.setItem(PANEL_STATE_KEY, JSON.stringify({ sidebar: sidebarOpen, inspector: inspectorOpen }));
+    } catch {
+        // ponytail: private mode / quota — ignore
+    }
+}
+
+function initPanelToggles() {
+    const main = document.querySelector(".explorer-main");
+    const sidebar = document.getElementById("explorerSidebar");
+    const inspector = document.getElementById("explorerInspector");
+    const sidebarInner = sidebar?.querySelector(".explorer-sidebar-inner");
+    const inspectorInner = inspector?.querySelector(".explorer-inspector-inner");
+    const sidebarBtn = document.getElementById("toggleSidebarBtn");
+    const inspectorBtn = document.getElementById("toggleInspectorBtn");
+    if (!main || !sidebar || !inspector || !sidebarInner || !inspectorInner || !sidebarBtn || !inspectorBtn) return;
+
+    const saved = loadPanelState();
+    let sidebarOpen = saved?.sidebar ?? false;
+    let inspectorOpen = saved?.inspector ?? false;
+
+    function applyPanels() {
+        main.classList.toggle("sidebar-hidden", !sidebarOpen);
+        main.classList.toggle("inspector-hidden", !inspectorOpen);
+        sidebarBtn.setAttribute("aria-pressed", String(sidebarOpen));
+        inspectorBtn.setAttribute("aria-pressed", String(inspectorOpen));
+        sidebarBtn.setAttribute("aria-expanded", String(sidebarOpen));
+        inspectorBtn.setAttribute("aria-expanded", String(inspectorOpen));
+        sidebarInner.toggleAttribute("inert", !sidebarOpen);
+        inspectorInner.toggleAttribute("inert", !inspectorOpen);
+        sidebarInner.setAttribute("aria-hidden", String(!sidebarOpen));
+        inspectorInner.setAttribute("aria-hidden", String(!inspectorOpen));
+        savePanelState(sidebarOpen, inspectorOpen);
+        requestAnimationFrame(resize);
+    }
+
+    sidebarBtn.addEventListener("click", () => {
+        sidebarOpen = !sidebarOpen;
+        if (!sidebarOpen && sidebarInner.contains(document.activeElement)) canvas.focus();
+        applyPanels();
+    });
+    inspectorBtn.addEventListener("click", () => {
+        inspectorOpen = !inspectorOpen;
+        if (!inspectorOpen && inspectorInner.contains(document.activeElement)) canvas.focus();
+        applyPanels();
+    });
+    applyPanels();
+}
+
 function init() {
     canvas = document.getElementById("graphCanvas");
     ctx = canvas.getContext("2d");
@@ -901,6 +1032,7 @@ function init() {
         setTimeout(() => { event.target.textContent = "copy soul"; }, 1000);
     });
     document.getElementById("closeInspectorBtn").addEventListener("click", clearSelection);
+    initPanelToggles();
     initPeerUrlPanel();
     loadGraph({ fit: true });
     connectLive();

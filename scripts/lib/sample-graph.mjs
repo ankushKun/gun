@@ -1,11 +1,74 @@
 /** Ordered sample souls for seeding: leaves before referrers where possible. */
 
+import { randomUUID } from "node:crypto";
+
+const ADJECTIVES = ["brisk", "quiet", "amber", "velvet", "crisp", "lunar", "wired", "mossy"];
+const NOUNS = ["relay", "pixel", "beacon", "vector", "shard", "signal", "ledger", "socket"];
+
+function pick(list) {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+/** Changes every seed run — drives explorer update pulses on fixed souls. */
+function volatileSeed(now = Date.now()) {
+  return {
+    seedAt: now,
+    seedNonce: randomUUID().slice(0, 8),
+    seedRoll: Number(Math.random().toFixed(6)),
+    pingMs: Math.floor(Math.random() * 380) + 20,
+  };
+}
+
+export function buildRandomGraph(prefix = "sample", count = 12) {
+  if (!Number.isFinite(count) || count < 1) {
+    return [];
+  }
+
+  const p = (path) => `${prefix}/${path}`;
+  const ref = (path) => ({ "#": p(path) });
+  const runId = randomUUID().slice(0, 8);
+  const ids = Array.from({ length: count }, () => randomUUID().slice(0, 8));
+  const entries = [];
+
+  for (let i = 0; i < count; i += 1) {
+    const id = ids[i];
+    const peerId = ids[(i + 1) % count];
+    const node = {
+      kind: "random",
+      runId,
+      index: i,
+      label: `${pick(ADJECTIVES)} ${pick(NOUNS)} ${id.slice(0, 4)}`,
+      score: Number((Math.random() * 100).toFixed(2)),
+      luck: Math.random() > 0.5,
+      tags: [pick(ADJECTIVES), pick(NOUNS), runId],
+      peer: ref(`random/nodes/${peerId}`),
+      payload: JSON.stringify({ runId, n: Math.random(), ts: Date.now() }),
+      meta: { roll: Math.random(), hue: Math.floor(Math.random() * 360) },
+    };
+    if (i % 3 === 0) {
+      node.anchor = ref("users/alice");
+    }
+    entries.push([p(`random/nodes/${id}`), node]);
+  }
+
+  entries.push([p("random/hub"), {
+    kind: "random-hub",
+    runId,
+    spawned: Date.now(),
+    members: ids.slice(0, Math.min(5, count)).map((id) => ref(`random/nodes/${id}`)),
+    backlink: ref("index"),
+  }]);
+
+  return entries;
+}
+
 export function buildSampleGraph(prefix = "sample") {
   const p = (path) => `${prefix}/${path}`;
   const ref = (path) => ({ "#": p(path) });
   const now = Date.now();
+  const volatile = volatileSeed(now);
 
-  const history = { label: "Event history (timestamp map)" };
+  const history = { label: "Event history (timestamp map)", refreshedAt: now };
   for (let i = 0; i < 18; i += 1) {
     const t = now + i * 1000;
     history[`t${t}`] = JSON.stringify({
@@ -24,6 +87,14 @@ export function buildSampleGraph(prefix = "sample") {
       booleanFalse: false,
       zeroValue: 0,
       emptyString: "",
+      ...volatile,
+    }],
+    [p("live/ticker"), {
+      label: "Live ticker",
+      note: "Re-seed to see explorer pulse animation on this node.",
+      mood: pick(ADJECTIVES),
+      counter: Math.floor(Math.random() * 10_000),
+      ...volatile,
     }],
     [p("types/arrays"), {
       tags: ["alpha", "beta", "gamma"],
@@ -46,6 +117,8 @@ export function buildSampleGraph(prefix = "sample") {
     [p("types/json-string"), {
       snapshot: JSON.stringify({
         at: now,
+        nonce: volatile.seedNonce,
+        roll: volatile.seedRoll,
         nodes: ["a", "b", "c"],
         meta: { version: 1, source: "seed-peer" },
       }),
@@ -79,6 +152,8 @@ export function buildSampleGraph(prefix = "sample") {
       manager: ref("users/diana"),
       team: ref("teams/engineering"),
       favoriteNumbers: [7, 13, 42],
+      lastSeen: now,
+      pingMs: volatile.pingMs,
       profile: {
         bio: "Builds graph tools.",
         links: { site: "https://example.com", repo: ref("projects/alpha") },
@@ -117,7 +192,12 @@ export function buildSampleGraph(prefix = "sample") {
       author: ref("users/alice"),
       coAuthors: [ref("users/bob"), ref("users/carol")],
       tags: ["announcement", "sample"],
-      reactions: { likes: 12, shares: 3, viewed: true },
+      ...volatile,
+      reactions: {
+        likes: 10 + Math.floor(Math.random() * 90),
+        shares: 1 + Math.floor(Math.random() * 12),
+        viewed: true,
+      },
     }],
     [p("catalog/widget"), {
       sku: "WDG-001",
@@ -151,6 +231,8 @@ export function buildSampleGraph(prefix = "sample") {
       showcase: ref("types/primitives"),
       post: ref("posts/welcome"),
       chain: ref("chains/head"),
+      ticker: ref("live/ticker"),
+      ...volatile,
     }],
   ];
 }

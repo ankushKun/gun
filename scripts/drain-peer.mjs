@@ -3,9 +3,10 @@ import { createInterface } from "node:readline/promises";
 import {
   DEFAULT_PEER_URL,
   createGun,
-  gunDeleteSoul,
-  gunReadManifest,
-  gunRemoveManifestEntry,
+  fetchStats,
+  formatBytes,
+  gunTombstoneSoul,
+  listVisibleGraphSouls,
   parseArgs,
   peerBaseUrl,
   runScript,
@@ -16,22 +17,36 @@ import { gunPeerUrl } from "../tests/shared/constants.js";
 function usage() {
   console.log(`Usage: npm run drain-peer -- [options]
 
-Gradually tombstone souls via Gun.js (/gun only).
-Only removes souls listed in <prefix>/__manifest (written by seed-peer).
+Gradually tombstone graph souls via Gun.js (/gun).
+Lists souls from the worker /api/graph/souls API, deletes each over /gun.
 
-To wipe ALL peer storage at once (graph, stats, peers), use clear-storage instead:
+For an instant full DO wipe (stats, peers, everything), use clear-storage instead:
   npm run clear-storage -- --url https://gun.ankush.one --yes
 
 Options:
   --url <base>         Worker origin (default: ${DEFAULT_PEER_URL})
-  --prefix <name>      Manifest prefix (default: sample)
+  --prefix <path>      Only souls under this prefix (default: all souls)
+  --q, --query <text>  Substring filter on soul paths
   --interval <ms>      Delay between deletes (default: 500)
   --yes                Skip confirmation
 
 Examples:
   npm run drain-peer -- --prefix sample
-  npm run drain-peer -- --url https://gun.ankush.one --interval 100 --yes
+  npm run drain-peer -- --url https://gun.ankush.one --q sample --interval 100 --yes
 `);
+}
+
+function drainScope(opts) {
+  if (opts.prefix && opts.query) {
+    return `souls under "${opts.prefix}/" matching "${opts.query}"`;
+  }
+  if (opts.prefix) {
+    return `souls under "${opts.prefix}/"`;
+  }
+  if (opts.query) {
+    return `souls matching "${opts.query}"`;
+  }
+  return "all visible graph souls";
 }
 
 async function confirm(message) {
@@ -49,7 +64,8 @@ async function main() {
   try {
     opts = parseArgs(process.argv.slice(2), {
       url: peerBaseUrl(DEFAULT_PEER_URL),
-      prefix: "sample",
+      prefix: "",
+      query: "",
       interval: 500,
       yes: false,
     });
@@ -68,10 +84,9 @@ async function main() {
     throw new Error("--interval must be a non-negative number");
   }
 
+  const scope = drainScope(opts);
   if (!opts.yes) {
-    const ok = await confirm(
-      `Gradually delete souls listed in ${opts.prefix}/__manifest on ${opts.url}?`,
-    );
+    const ok = await confirm(`Gradually delete ${scope} on ${opts.url}?`);
     if (!ok) {
       console.log("aborted");
       return;
@@ -82,27 +97,33 @@ async function main() {
   const gun = createGun(opts.url);
   await sleep(300);
 
+  const before = await fetchStats(opts.url);
   console.log(`peer: ${gunPeerUrl(opts.url)}`);
-  console.log(`manifest: ${opts.prefix}/__manifest`);
+  console.log(`scope: ${scope}`);
+  console.log(
+    `before: ${before.storage?.graphNodes ?? "?"} nodes, ${formatBytes(before.storage?.bytesUsed)} used`,
+  );
 
   let deleted = 0;
   while (true) {
-    const souls = await gunReadManifest(gun, opts.prefix);
-    const pending = souls.filter((soul) => soul !== `${opts.prefix}/__manifest`);
-    if (!pending.length) {
+    const souls = await listVisibleGraphSouls(opts.url, {
+      prefix: opts.prefix,
+      query: opts.query,
+    });
+    if (!souls.length) {
       break;
     }
 
-    const soul = pending[pending.length - 1];
+    const soul = souls[0];
     try {
-      await gunDeleteSoul(gun, soul);
+      await gunTombstoneSoul(gun, opts.url, soul);
     } catch (error) {
       console.warn(`\nwarn: ${error.message}`);
     }
-    await gunRemoveManifestEntry(gun, opts.prefix, soul);
     deleted += 1;
+    const remaining = souls.length - 1;
     process.stdout.write(
-      `\rdeleted ${deleted}  remaining ~${pending.length - 1}  last: ${soul.slice(0, 40)}`,
+      `\rdeleted ${deleted}  remaining ~${remaining}  last: ${soul.slice(0, 40)}`,
     );
 
     if (opts.interval > 0) {
@@ -110,9 +131,12 @@ async function main() {
     }
   }
 
-  await gunDeleteSoul(gun, `${opts.prefix}/__manifest`);
-  console.log(`\ndone: tombstoned ${deleted} souls via Gun`);
-  console.log("note: keys may remain in DO storage; run npm run clear-storage to wipe the worker");
+  const after = await fetchStats(opts.url);
+  console.log(
+    `\ndone: tombstoned ${deleted} souls via Gun; ` +
+      `${after.storage?.graphNodes ?? "?"} nodes, ${formatBytes(after.storage?.bytesUsed)} used`,
+  );
+  console.log("note: tombstoned keys may remain in DO storage; run npm run clear-storage to wipe the worker");
 }
 
 runScript(main);

@@ -32,13 +32,12 @@ describe("graph explorer data", () => {
       nodes: [{ soul: "a" }, { soul: "b" }],
       edges: [{ from: "a", to: "b", field: "link" }],
     });
-    const springError = () => Math.abs(Math.hypot(
-      graph.nodes[0].x - graph.nodes[1].x,
-      graph.nodes[0].y - graph.nodes[1].y,
-    ) - 105);
-    const before = springError();
+    const dist = () => Math.hypot(graph.nodes[0].x - graph.nodes[1].x, graph.nodes[0].y - graph.nodes[1].y);
+    const minDist = graph.nodes[0].radius + graph.nodes[1].radius + 26;
+    const before = dist();
     settleGraph(graph);
-    expect(springError()).toBeLessThan(before);
+    expect(dist()).toBeGreaterThan(minDist - 1);
+    expect(dist()).toBeGreaterThan(before * 0.35);
   });
 
   it("recognizes rich inspector values without executing them", () => {

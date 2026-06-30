@@ -25,12 +25,20 @@
             </div>
         </header>
 
-        <main class="explorer-main">
-            <aside class="explorer-sidebar">
-                <label for="searchInput">nodes <span id="nodeCount"></span></label>
-                <input id="searchInput" type="search" placeholder="search soul or content…" autocomplete="off" spellcheck="false">
-                <div id="nodeList" class="explorer-node-list" role="list"></div>
-            </aside>
+        <main class="explorer-main sidebar-hidden inspector-hidden">
+            <div class="explorer-sidebar-wrap">
+                <aside class="explorer-sidebar" id="explorerSidebar" aria-label="Node list">
+                    <div class="explorer-sidebar-inner">
+                        <label for="searchInput">nodes <span id="nodeCount"></span></label>
+                        <input id="searchInput" type="search" placeholder="search soul or content…" autocomplete="off" spellcheck="false">
+                        <div id="nodeList" class="explorer-node-list" role="list"></div>
+                    </div>
+                </aside>
+                <button id="toggleSidebarBtn" class="explorer-panel-toggle explorer-panel-toggle--sidebar" type="button" aria-pressed="false" aria-controls="explorerSidebar" aria-label="Toggle node list" title="Toggle node list">
+                    <span class="explorer-panel-toggle__open" aria-hidden="true">&lt;</span>
+                    <span class="explorer-panel-toggle__closed" aria-hidden="true">&gt;</span>
+                </button>
+            </div>
 
             <section class="explorer-stage" aria-label="Interactive graph">
                 <canvas id="graphCanvas" tabindex="0" aria-label="Gun graph. Use the node list to navigate accessibly."></canvas>
@@ -43,29 +51,37 @@
                 <div id="graphTooltip" class="explorer-tooltip" hidden></div>
             </section>
 
-            <aside class="explorer-inspector" aria-live="polite">
-                <div id="inspectorEmpty" class="explorer-inspector-empty">
-                    <span>node inspector</span>
-                    select a node to inspect its data
-                </div>
-                <div id="inspectorContent" hidden>
-                    <div class="explorer-inspector-head">
-                        <span id="inspectorKind">node</span>
-                        <div>
-                            <button id="closeInspectorBtn" class="explorer-close" type="button">close</button>
-                            <button id="copySoulBtn" type="button">copy soul</button>
+            <div class="explorer-inspector-wrap">
+                <button id="toggleInspectorBtn" class="explorer-panel-toggle explorer-panel-toggle--inspector" type="button" aria-pressed="false" aria-controls="explorerInspector" aria-label="Toggle inspector" title="Toggle inspector">
+                    <span class="explorer-panel-toggle__open" aria-hidden="true">&gt;</span>
+                    <span class="explorer-panel-toggle__closed" aria-hidden="true">&lt;</span>
+                </button>
+                <aside class="explorer-inspector" id="explorerInspector" aria-label="Node inspector" aria-live="polite">
+                    <div class="explorer-inspector-inner">
+                        <div id="inspectorEmpty" class="explorer-inspector-empty">
+                            <span>node inspector</span>
+                            select a node to inspect its data
+                        </div>
+                        <div id="inspectorContent" hidden>
+                            <div class="explorer-inspector-head">
+                                <span id="inspectorKind">node</span>
+                                <div>
+                                    <button id="closeInspectorBtn" class="explorer-close" type="button">close</button>
+                                    <button id="copySoulBtn" type="button">copy soul</button>
+                                </div>
+                            </div>
+                            <h2 id="inspectorLabel"></h2>
+                            <p id="inspectorSoul"></p>
+                            <p id="inspectorMeta"></p>
+                            <div id="inspectorFields"></div>
+                            <details class="explorer-raw">
+                                <summary>raw gun node</summary>
+                                <pre id="inspectorRaw"></pre>
+                            </details>
                         </div>
                     </div>
-                    <h2 id="inspectorLabel"></h2>
-                    <p id="inspectorSoul"></p>
-                    <p id="inspectorMeta"></p>
-                    <div id="inspectorFields"></div>
-                    <details class="explorer-raw">
-                        <summary>raw gun node</summary>
-                        <pre id="inspectorRaw"></pre>
-                    </details>
-                </div>
-            </aside>
+                </aside>
+            </div>
         </main>
 
         <footer id="statusBar" class="explorer-status">
