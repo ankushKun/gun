@@ -1,6 +1,6 @@
 {
   "name": "gun-peer-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Cloudflare Workers Gun.js-compatible peer with persistent Durable Object storage",
   "type": "module",
   "main": "src/worker.js",
