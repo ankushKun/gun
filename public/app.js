@@ -216,7 +216,7 @@ function updateStats(data, latencyMs) {
             document.getElementById('storageUsed').textContent =
                 used != null ? formatBytes(used) : 'unknown';
             document.getElementById('storageBackend').textContent =
-                data.storage.backend || 'sqlite';
+                data.storage.backend || 'durable-object-sqlite';
             document.getElementById('graphNodes').textContent =
                 data.storage.graphNodes != null ? data.storage.graphNodes : '0';
             if (limit) {
