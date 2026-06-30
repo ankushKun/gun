@@ -178,6 +178,13 @@ function updateStats(data) {
                 document.getElementById('storageLimit').textContent =
                     formatBytes(data.storage.limitBytes);
             }
+            const note = document.getElementById('storageEvictionNote');
+            const evictAt = data.storage.evictAtBytes;
+            const evictBytes = data.storage.evictBytes;
+            if (note && evictAt && evictBytes) {
+                note.textContent =
+                    `When usage nears ${formatBytes(evictAt)}, about ${formatBytes(evictBytes)} of the oldest graph data is cleared automatically to make room for new data.`;
+            }
         }
 
         if (data.throughput?.samples) {
