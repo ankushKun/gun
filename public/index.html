@@ -11,8 +11,15 @@
 <body>
     <div class="container">
         <header>
-            <h1>gun.js peer</h1>
-            <span id="statusText">offline</span>
+            <div class="header-row">
+                <h1>gun.js peer</h1>
+                <span id="statusText">offline</span>
+            </div>
+            <div class="live-clients" id="liveClientsBlock">
+                <span class="live-dot" id="liveDot" aria-hidden="true"></span>
+                <span class="live-count" id="liveClients">0</span>
+                <span class="live-label">connected</span>
+            </div>
         </header>
 
         <section>
@@ -24,44 +31,32 @@
             <h2>connections</h2>
             <table>
                 <tr>
-                    <td>current</td>
-                    <td id="currentConnections">0</td>
-                </tr>
-                <tr>
-                    <td>total</td>
+                    <td>total sessions</td>
                     <td id="totalConnections">0</td>
-                </tr>
-                <tr>
-                    <td>peers</td>
-                    <td id="activePeers">0</td>
                 </tr>
             </table>
         </section>
 
         <section>
-            <h2>messages/sec</h2>
-            <canvas id="messagesGraph" width="580" height="100"></canvas>
-        </section>
-
-        <section>
-            <h2>bytes/sec</h2>
-            <canvas id="bytesGraph" width="580" height="100"></canvas>
+            <h2>throughput</h2>
+            <canvas id="throughputGraph" width="580" height="120"></canvas>
         </section>
 
         <section>
             <h2>storage</h2>
+            <div class="value" id="storageUsed">0 B</div>
             <table>
                 <tr>
-                    <td>mode</td>
-                    <td id="heapUsed">0 MB</td>
-                </tr>
-                <tr>
                     <td>backend</td>
-                    <td id="heapTotal">0 MB</td>
+                    <td id="storageBackend">sqlite</td>
                 </tr>
                 <tr>
-                    <td>memory</td>
-                    <td id="rss">0 MB</td>
+                    <td>graph nodes</td>
+                    <td id="graphNodes">0</td>
+                </tr>
+                <tr>
+                    <td>limit</td>
+                    <td id="storageLimit">10 GB</td>
                 </tr>
             </table>
         </section>
