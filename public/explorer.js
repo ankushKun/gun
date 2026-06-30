@@ -1,20 +1,29 @@
 const MAX_NODES = 220;
 const NODE_RADIUS = 10;
 const PHYSICS_FLOOR = 0.025;
-const COLORS = {
-    background: "#000",
-    edge: "#285e32",
-    edgeActive: "#55ff72",
-    node: "#d8e1da",
-    nodeFill: "#08130a",
-    selected: "#00ff55",
-    neighbor: "#87ff9b",
-    ghost: "#555",
-    muted: "#303030",
-    grid: "#1d3d24",
-    removing: "#ff5d5d",
-    text: "#d8e1da",
-};
+
+function graphColors() {
+    const v = (name) => getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim();
+    return {
+        background: v('graph-bg'),
+        edge: v('graph-edge'),
+        edgeActive: v('graph-edge-active'),
+        node: v('graph-node'),
+        nodeFill: v('graph-node-fill'),
+        selected: v('graph-selected'),
+        neighbor: v('graph-neighbor'),
+        ghost: v('graph-ghost'),
+        muted: v('graph-muted'),
+        grid: v('graph-grid'),
+        removing: v('graph-removing'),
+        text: v('graph-node'),
+        edgeIdle: v('graph-edge-idle'),
+        nodeExit: v('graph-node-exit'),
+        nodeGhostFill: v('graph-node-ghost-fill'),
+    };
+}
+
+let COLORS = graphColors();
 
 const state = {
     rows: [],
@@ -263,7 +272,7 @@ function drawArrow(edge, active) {
         ctx.closePath();
         ctx.fill();
         if (active || view.scale > 1.25) {
-            ctx.fillStyle = edge.exiting ? COLORS.removing : active ? COLORS.neighbor : "#718075";
+            ctx.fillStyle = edge.exiting ? COLORS.removing : active ? COLORS.neighbor : COLORS.edgeIdle;
             ctx.font = "9px monospace";
             ctx.textAlign = "left";
             ctx.fillText(edge.field, from.x + radius * 1.2, from.y - radius * 1.4);
@@ -305,7 +314,7 @@ function drawArrow(edge, active) {
 
     if ((active || view.scale > 1.25) && distance > 55) {
         ctx.globalAlpha = (active ? 1 : 0.65) * edge.opacity;
-        ctx.fillStyle = edge.exiting ? COLORS.removing : active ? COLORS.neighbor : "#718075";
+        ctx.fillStyle = edge.exiting ? COLORS.removing : active ? COLORS.neighbor : COLORS.edgeIdle;
         ctx.font = "9px monospace";
         ctx.textAlign = "center";
         ctx.fillText(edge.field, cx, cy - 5);
@@ -337,6 +346,7 @@ function drawGrid() {
 
 function draw() {
     if (!ctx) return;
+    COLORS = graphColors();
     ctx.clearRect(0, 0, width, height);
     drawGrid();
     const active = activeSouls();
@@ -367,7 +377,7 @@ function draw() {
             }
         }
         ctx.globalAlpha = (matched ? 1 : 0.15) * node.opacity;
-        ctx.fillStyle = node.exiting ? "#1b0808" : node.ghost ? "#090909" : COLORS.nodeFill;
+        ctx.fillStyle = node.exiting ? COLORS.nodeExit : node.ghost ? COLORS.nodeGhostFill : COLORS.nodeFill;
         ctx.strokeStyle = node.exiting ? COLORS.removing : selected ? COLORS.selected : node.ghost ? COLORS.ghost : neighbor ? COLORS.neighbor : COLORS.node;
         ctx.lineWidth = selected ? 2.5 : 1.25;
         if (node.ghost) ctx.setLineDash([3, 3]);
@@ -448,7 +458,7 @@ function bindCanvas() {
         const next = hitNode(point.x, point.y);
         if (hovered !== next) {
             hovered = next;
-            canvas.style.cursor = next ? "pointer" : "grab";
+            canvas.classList.toggle('is-pointer', Boolean(next));
             renderTooltip(event, next);
             draw();
         } else if (next) {
@@ -468,6 +478,7 @@ function bindCanvas() {
     canvas.addEventListener("pointerleave", () => {
         if (!pointer) {
             hovered = null;
+            canvas.classList.remove('is-pointer');
             document.getElementById("graphTooltip").hidden = true;
             draw();
         }

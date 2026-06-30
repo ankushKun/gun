@@ -1,6 +1,7 @@
 const PEER_TOKEN_KEY = 'gun-peer-edit-token';
 
 let meshPeers = [];
+let meshPeersKey = '';
 
 function peerAuthHeaders() {
     const token = sessionStorage.getItem(PEER_TOKEN_KEY);
@@ -26,6 +27,11 @@ function meshStatusLabel(status) {
 function renderPeerList() {
     const list = document.getElementById('peerList');
     if (!list) return;
+
+    const key = JSON.stringify(meshPeers.map((p) => [p.id, p.url, p.meshStatus]));
+    if (key === meshPeersKey) return;
+    meshPeersKey = key;
+
     list.innerHTML = '';
 
     if (!meshPeers.length) {

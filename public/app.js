@@ -84,6 +84,15 @@ function drawTimeSeries(ctx, samples, valueKey, baselineY, plotH, yMax, strokeSt
     ctx.stroke();
 }
 
+function graphPalette(status) {
+    const v = window.themeVar || (() => '');
+    return {
+        online: { msg: v('graph-msg'), byte: v('graph-byte') },
+        error: { msg: v('error'), byte: v('error-dim') },
+        offline: { msg: v('text-muted'), byte: v('text-faint') },
+    }[status] || { msg: v('text-muted'), byte: v('text-faint') };
+}
+
 function drawThroughputGraph(canvasId, samples, windowMs = GRAPH_WINDOW_MS) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
@@ -95,12 +104,13 @@ function drawThroughputGraph(canvasId, samples, windowMs = GRAPH_WINDOW_MS) {
     const plotH = height - plotTop - pad;
     const baselineY = height - pad;
     const now = Date.now();
+    const v = window.themeVar || (() => '');
 
-    ctx.fillStyle = '#000';
+    ctx.fillStyle = v('graph-bg') || '#032221';
     ctx.fillRect(0, 0, width, height);
 
     const visible = samples.filter((s) => s.t >= now - windowMs);
-    const colors = GRAPH_COLORS[graphStatus] || GRAPH_COLORS.offline;
+    const colors = graphPalette(graphStatus);
 
     if (!visible.length) {
         ctx.font = '10px monospace';
@@ -114,7 +124,7 @@ function drawThroughputGraph(canvasId, samples, windowMs = GRAPH_WINDOW_MS) {
     const msgMax = graphScale(msgValues);
     const byteMax = graphScale(byteValues);
 
-    ctx.strokeStyle = '#222';
+    ctx.strokeStyle = v('graph-line') || '#0f4a40';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, baselineY);
@@ -133,12 +143,6 @@ function drawThroughputGraph(canvasId, samples, windowMs = GRAPH_WINDOW_MS) {
 
 let lastGraph = { samples: [], windowMs: GRAPH_WINDOW_MS };
 let graphStatus = 'offline';
-
-const GRAPH_COLORS = {
-    online: { msg: '#0f0', byte: '#393' },
-    error: { msg: '#f66', byte: '#933' },
-    offline: { msg: '#fff', byte: '#666' },
-};
 
 function redrawThroughputGraph(samples, windowMs = GRAPH_WINDOW_MS) {
     lastGraph = { samples, windowMs };
