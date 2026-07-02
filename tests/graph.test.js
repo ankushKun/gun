@@ -111,6 +111,17 @@ describe("graph helpers", () => {
     expect(fields[0].entries[0].type).toBe("object");
   });
 
+  it("collapses s: timestamp map nodes into entries summary", () => {
+    const node = { _: { "#": "history", ">": {} } };
+    for (let i = 0; i < 20; i++) {
+      node[`s:${1000 + i}`] = JSON.stringify({ at: String(1000 + i), nodes: [] });
+    }
+    expect(isTimestampMapNode(node)).toBe(true);
+    const { fields } = summarizeNodeFields(node);
+    expect(fields).toHaveLength(1);
+    expect(fields[0].keyCount).toBe(20);
+  });
+
   it("parses json strings in field values", () => {
     const field = summarizeFieldValue("snap", '{"at":"1","nodes":[]}');
     expect(field.type).toBe("object");

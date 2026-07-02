@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>gun.js graph explorer</title>
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/vendor/jsoneditor/jsoneditor.min.css">
 </head>
 <body class="explorer-body">
     <div class="explorer-shell">
@@ -76,7 +77,7 @@
                             <div id="inspectorFields"></div>
                             <details class="explorer-raw">
                                 <summary>raw gun node</summary>
-                                <pre id="inspectorRaw"></pre>
+                                <div id="inspectorRaw" class="json-inspector json-inspector--raw"></div>
                             </details>
                         </div>
                     </div>
@@ -101,6 +102,7 @@
     </div>
 
     <script src="/theme.js"></script>
+    <script src="/vendor/jsoneditor/jsoneditor-minimalist.min.js"></script>
     <script type="module" src="/explorer.js"></script>
 </body>
 </html>

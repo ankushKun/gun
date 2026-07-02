@@ -28,3 +28,36 @@ document.addEventListener('pointermove', syncPointerCursor, { passive: true });
 document.addEventListener('pointerleave', () => {
     document.documentElement.classList.remove('cursor-pointer');
 }, true);
+
+function isOffSubdomain(href) {
+    if (!href || href.startsWith("#") || href.startsWith("javascript:")) return false;
+    try {
+        const url = new URL(href, location.href);
+        if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+        return url.hostname.toLowerCase() !== location.hostname.toLowerCase();
+    } catch {
+        return false;
+    }
+}
+
+function externalizeLink(link) {
+    if (!isOffSubdomain(link.getAttribute("href"))) return;
+    link.target = "_blank";
+    if (!/\bnoopener\b/.test(link.rel)) {
+        link.rel = link.rel ? `${link.rel} noopener noreferrer` : "noopener noreferrer";
+    }
+}
+
+function externalizeLinks(root = document) {
+    if (root.matches?.("a[href]")) externalizeLink(root);
+    root.querySelectorAll?.("a[href]").forEach(externalizeLink);
+}
+
+externalizeLinks();
+new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+            if (node.nodeType === 1) externalizeLinks(node);
+        }
+    }
+}).observe(document.documentElement, { childList: true, subtree: true });

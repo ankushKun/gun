@@ -1,3 +1,5 @@
+import { HISTORY_KEY_RE } from "../public/graph-inspector.js";
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "access-control-allow-origin": "*",
@@ -23,7 +25,6 @@ const GRAPH_SUBGRAPH_MAX_DEPTH = 2;
 const GRAPH_FIELD_PREVIEW_LEN = 80;
 const GRAPH_INSPECTOR_COLLAPSE_AT = 12;
 const GRAPH_INSPECTOR_MAP_PREVIEW = 15;
-const GRAPH_TIMESTAMP_KEY_RE = /^t\d+$/;
 
 const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
@@ -1485,7 +1486,7 @@ function isTimestampMapNode(node) {
   if (keys.length < GRAPH_INSPECTOR_COLLAPSE_AT) {
     return false;
   }
-  const tsKeys = keys.filter((k) => GRAPH_TIMESTAMP_KEY_RE.test(k));
+  const tsKeys = keys.filter((k) => HISTORY_KEY_RE.test(k));
   return tsKeys.length >= keys.length * 0.7;
 }
 

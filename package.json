@@ -12,7 +12,8 @@
     "drain-peer": "node scripts/drain-peer.mjs",
     "clear-storage": "node scripts/clear-do-storage.mjs",
     "test": "node scripts/run-tests.mjs",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "vendor:jsoneditor": "mkdir -p public/vendor/jsoneditor/img && cp node_modules/jsoneditor/dist/jsoneditor-minimalist.min.js public/vendor/jsoneditor/ && cp node_modules/jsoneditor/dist/jsoneditor.min.css public/vendor/jsoneditor/ && cp node_modules/jsoneditor/dist/img/jsoneditor-icons.svg public/vendor/jsoneditor/img/"
   },
   "keywords": [
     "gun",
@@ -24,6 +25,7 @@
   "license": "MIT",
   "devDependencies": {
     "gun": "^0.2020.1241",
+    "jsoneditor": "^10.4.3",
     "vitest": "~3.0.0",
     "wrangler": "^4.105.0"
   }

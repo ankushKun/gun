@@ -1,3 +1,5 @@
+import { groupInspectorFields } from "./graph-inspector.js";
+
 const MAX_NODES = 220;
 const NODE_RADIUS = 13;
 const PHYSICS_FLOOR = 0.3;
@@ -27,7 +29,7 @@ function initialNodePosition(soul, index, count) {
 }
 
 function graphColors() {
-    const v = (name) => getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim();
+    const v = (name) => (typeof getComputedStyle === "undefined" ? "" : getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim());
     return {
         background: v('graph-bg'),
         edge: v('graph-edge'),
@@ -651,6 +653,316 @@ function renderTooltip(event, node) {
     tooltip.hidden = false;
 }
 
+const inspectorViews = {
+    soul: null,
+    raw: null,
+    fields: new Map(),
+};
+
+function pathKey(path) {
+    return path.length ? path.map(String).join(".") : "root";
+}
+
+function jsonDiffPaths(a, b, path = []) {
+    const changed = new Set();
+    const added = new Set();
+    const removed = new Set();
+    if (a === b) return { changed, added, removed };
+    const key = pathKey(path);
+    if (a == null || b == null || typeof a !== typeof b || Array.isArray(a) !== Array.isArray(b)) {
+        if (a !== b) changed.add(key);
+        return { changed, added, removed };
+    }
+    if (typeof a !== "object") {
+        if (a !== b) changed.add(key);
+        return { changed, added, removed };
+    }
+    if (Array.isArray(a)) {
+        const maxLen = Math.max(a.length, b.length);
+        for (let i = 0; i < maxLen; i++) {
+            const childPath = [...path, i];
+            if (i >= a.length) added.add(pathKey(childPath));
+            else if (i >= b.length) removed.add(pathKey(childPath));
+            else {
+                const sub = jsonDiffPaths(a[i], b[i], childPath);
+                sub.changed.forEach((item) => changed.add(item));
+                sub.added.forEach((item) => added.add(item));
+                sub.removed.forEach((item) => removed.add(item));
+            }
+        }
+        return { changed, added, removed };
+    }
+    for (const field of new Set([...Object.keys(a), ...Object.keys(b)])) {
+        const childPath = [...path, field];
+        if (!(field in a)) added.add(pathKey(childPath));
+        else if (!(field in b)) removed.add(pathKey(childPath));
+        else {
+            const sub = jsonDiffPaths(a[field], b[field], childPath);
+            sub.changed.forEach((item) => changed.add(item));
+            sub.added.forEach((item) => added.add(item));
+            sub.removed.forEach((item) => removed.add(item));
+        }
+    }
+    return { changed, added, removed };
+}
+
+function normalizePreviewJson(value, maxDepth = 2, depth = 0) {
+    if (depth >= maxDepth) return value;
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            try {
+                return normalizePreviewJson(JSON.parse(trimmed), maxDepth, depth + 1);
+            } catch {}
+        }
+        return value;
+    }
+    if (Array.isArray(value)) return value.map((item) => normalizePreviewJson(item, maxDepth, depth + 1));
+    if (value && typeof value === "object") {
+        const out = {};
+        for (const [key, item] of Object.entries(value)) out[key] = normalizePreviewJson(item, maxDepth, depth + 1);
+        return out;
+    }
+    return value;
+}
+
+function isJsonLikeType(type) {
+    return type === "object" || type === "array" || type === "json";
+}
+
+function parseFieldJson(value, type) {
+    if (type === "json") return normalizePreviewJson(JSON.parse(value));
+    if (type === "object" || type === "array") return normalizePreviewJson(value);
+    return value;
+}
+
+function diffClassForPath(path, diff) {
+    const key = pathKey(path);
+    if (diff.added.has(key)) return "json-diff-added";
+    if (diff.removed.has(key)) return "json-diff-removed";
+    if (diff.changed.has(key)) return "json-diff-changed";
+    return undefined;
+}
+
+function cloneJson(value) {
+    return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function syncJsonEditorIndent(container) {
+    // ponytail: jsoneditor sets inline marginLeft per level; strip it and let CSS nesting own indent
+    container.querySelectorAll("table.jsoneditor-values").forEach((table) => {
+        table.style.removeProperty("margin-left");
+    });
+}
+
+function scheduleJsonEditorLayout(container) {
+    requestAnimationFrame(() => syncJsonEditorIndent(container));
+}
+
+function expandableRowAtY(container, clientY) {
+    let match;
+    for (const row of container.querySelectorAll("tr.jsoneditor-expandable")) {
+        const { top, bottom } = row.getBoundingClientRect();
+        if (clientY >= top && clientY <= bottom) match = row;
+    }
+    return match;
+}
+
+function createJsonInspector(container) {
+    if (typeof JSONEditor === "undefined") {
+        const pre = document.createElement("pre");
+        container.append(pre);
+        return {
+            set(json) { pre.textContent = JSON.stringify(json, null, 2); },
+            update(json) { pre.textContent = JSON.stringify(json, null, 2); },
+            destroy() { container.replaceChildren(); },
+        };
+    }
+    let previousJson;
+    let activeDiff = { changed: new Set(), added: new Set(), removed: new Set() };
+    let fadeTimer;
+    const editor = new JSONEditor(container, {
+        mode: "view",
+        timestampTag: false,
+        colorPicker: false,
+        mainMenuBar: false,
+        navigationBar: false,
+        statusBar: false,
+        search: false,
+        onClassName({ path }) {
+            return diffClassForPath(path, activeDiff);
+        },
+    });
+    container.addEventListener("click", (event) => {
+        if (event.target.closest("a.jsoneditor-value")) return;
+        const button = event.target.closest("button.jsoneditor-button");
+        if (button) {
+            button.blur();
+            return;
+        }
+        let row = event.target.closest("tr.jsoneditor-expandable");
+        if (!row && event.target.closest(".jsoneditor, .json-inspector")) {
+            row = expandableRowAtY(container, event.clientY);
+        }
+        if (!row) return;
+        const toggle = row.querySelector("button.jsoneditor-button:not(.jsoneditor-invisible)");
+        if (!toggle) return;
+        toggle.click();
+        toggle.blur();
+        scheduleJsonEditorLayout(container);
+    }, true);
+    const expandRoot = () => {
+        try {
+            editor.expand({ path: [], isExpand: true, recursive: false });
+        } catch {}
+    };
+    return {
+        set(json) {
+            previousJson = cloneJson(json);
+            activeDiff = { changed: new Set(), added: new Set(), removed: new Set() };
+            editor.set(json);
+            expandRoot();
+            scheduleJsonEditorLayout(container);
+        },
+        update(json) {
+            activeDiff = jsonDiffPaths(previousJson, json);
+            editor.update(json);
+            scheduleJsonEditorLayout(container);
+            if (fadeTimer) clearTimeout(fadeTimer);
+            fadeTimer = setTimeout(() => {
+                activeDiff = { changed: new Set(), added: new Set(), removed: new Set() };
+                editor.refresh();
+                scheduleJsonEditorLayout(container);
+                fadeTimer = null;
+            }, 4000);
+            previousJson = cloneJson(json);
+        },
+        destroy() {
+            if (fadeTimer) clearTimeout(fadeTimer);
+            editor.destroy();
+            container.replaceChildren();
+        },
+    };
+}
+
+function resetInspectorViews() {
+    inspectorViews.raw?.destroy();
+    inspectorViews.raw = null;
+    for (const entry of inspectorViews.fields.values()) entry.inspector?.destroy();
+    inspectorViews.fields.clear();
+    inspectorViews.soul = null;
+}
+
+function mountFieldJsonInspector(entry) {
+    if (entry.inspector || !entry.mount) return;
+    entry.inspector = createJsonInspector(entry.mount);
+    entry.inspector.set(entry.pendingJson ?? entry.lastJson);
+}
+
+function buildFieldEntry(id, label, value, type, { collapsed = false } = {}) {
+    const article = document.createElement("article");
+    article.dataset.field = id;
+    const name = document.createElement("strong");
+    name.textContent = label;
+    const badge = document.createElement("span");
+    badge.textContent = type;
+    if (!isJsonLikeType(type)) {
+        const head = document.createElement("div");
+        head.append(name, badge);
+        article.append(head, valueElement(value, type));
+        return { article, id, label, type, inspector: null, collapsed: false };
+    }
+    const parsed = parseFieldJson(value, type);
+    if (collapsed) {
+        const details = document.createElement("details");
+        details.className = "inspector-group";
+        const summary = document.createElement("summary");
+        summary.append(name, badge);
+        const mount = document.createElement("div");
+        mount.className = "json-inspector json-inspector--field";
+        details.append(summary, mount);
+        article.append(details);
+        const entry = { article, mount, inspector: null, lastJson: parsed, pendingJson: parsed, type, id, label, collapsed: true };
+        details.addEventListener("toggle", () => {
+            if (details.open) mountFieldJsonInspector(entry);
+        });
+        return entry;
+    }
+    const head = document.createElement("div");
+    head.append(name, badge);
+    const mount = document.createElement("div");
+    mount.className = "json-inspector json-inspector--field";
+    article.append(head, mount);
+    const entry = { article, mount, inspector: null, lastJson: parsed, pendingJson: parsed, type, id, label, collapsed: false };
+    mountFieldJsonInspector(entry);
+    return entry;
+}
+
+function fieldGroupLabel(entry, label) {
+    entry.label = label;
+    const strong = entry.article.querySelector("strong");
+    if (strong) strong.textContent = label;
+}
+
+function updateInspectorFields(data) {
+    const fieldsEl = document.getElementById("inspectorFields");
+    const groups = groupInspectorFields(data?.raw || {});
+    const idSet = new Set(groups.map((group) => group.id));
+    for (const [id, entry] of inspectorViews.fields) {
+        if (!idSet.has(id)) {
+            entry.inspector?.destroy();
+            entry.article?.remove();
+            inspectorViews.fields.delete(id);
+        }
+    }
+    for (const group of groups) {
+        const { id, label, value, collapsed = false } = group;
+        const type = group.type || typeOfValue(value, id);
+        let entry = inspectorViews.fields.get(id);
+        if (!entry || entry.type !== type || entry.collapsed !== collapsed) {
+            entry?.inspector?.destroy();
+            entry?.article?.remove();
+            entry = buildFieldEntry(id, label, value, type, { collapsed });
+            inspectorViews.fields.set(id, entry);
+        } else if (entry.label !== label) {
+            fieldGroupLabel(entry, label);
+        }
+        if (isJsonLikeType(type)) {
+            const parsed = parseFieldJson(value, type);
+            entry.lastJson = parsed;
+            entry.pendingJson = parsed;
+            const details = entry.article.querySelector("details.inspector-group");
+            if (entry.inspector) entry.inspector.update(parsed);
+            else if (!details || details.open) mountFieldJsonInspector(entry);
+        } else {
+            const content = entry.collapsed
+                ? null
+                : entry.article.querySelector(":scope > :not(div)");
+            const next = valueElement(value, type);
+            content?.replaceWith(next);
+        }
+        fieldsEl.append(entry.article);
+    }
+}
+
+function updateRawInspector(data, forceSet = false) {
+    const container = document.getElementById("inspectorRaw");
+    if (!data?.raw) {
+        inspectorViews.raw?.destroy();
+        inspectorViews.raw = null;
+        container.replaceChildren();
+        return;
+    }
+    const json = normalizePreviewJson(data.raw);
+    if (!inspectorViews.raw || forceSet) {
+        inspectorViews.raw?.destroy();
+        inspectorViews.raw = createJsonInspector(container);
+        inspectorViews.raw.set(json);
+    } else {
+        inspectorViews.raw.update(json);
+    }
+}
+
 function typeOfValue(value, key = "") {
     if (value && typeof value === "object" && !Array.isArray(value) && typeof value["#"] === "string") return "reference";
     if (value === null) return "null";
@@ -706,16 +1018,6 @@ function valueElement(value, type) {
         link.textContent = value;
         return link;
     }
-    if (type === "object" || type === "array" || type === "json") {
-        const details = document.createElement("details");
-        const summary = document.createElement("summary");
-        const parsed = type === "json" ? JSON.parse(value) : value;
-        summary.textContent = type === "array" ? `${parsed.length} items` : `${Object.keys(parsed).length} entries`;
-        const pre = document.createElement("pre");
-        pre.textContent = JSON.stringify(parsed, null, 2);
-        details.append(summary, pre);
-        return details;
-    }
     const output = document.createElement(type === "text" ? "pre" : "span");
     output.textContent = value === null ? "null" : String(value);
     return output;
@@ -726,6 +1028,7 @@ function renderInspector() {
     const content = document.getElementById("inspectorContent");
     document.querySelector(".explorer-inspector").classList.toggle("open", Boolean(state.selected));
     if (!state.selected) {
+        resetInspectorViews();
         empty.hidden = false;
         content.hidden = true;
         return;
@@ -740,23 +1043,24 @@ function renderInspector() {
     document.getElementById("inspectorMeta").textContent = data
         ? `${new Date(data.updated).toLocaleString()} · ${data.refs.length} outgoing relations`
         : "This soul is referenced by another node but is not stored on this peer.";
-    document.getElementById("inspectorRaw").textContent = data ? JSON.stringify(data.raw, null, 2) : "";
 
-    const fields = document.getElementById("inspectorFields");
-    fields.replaceChildren();
-    for (const [key, value] of Object.entries(data?.raw || {})) {
-        if (key === "_") continue;
-        const type = typeOfValue(value, key);
-        const article = document.createElement("article");
-        const head = document.createElement("div");
-        const name = document.createElement("strong");
-        name.textContent = key;
-        const badge = document.createElement("span");
-        badge.textContent = type;
-        head.append(name, badge);
-        article.append(head, valueElement(value, type));
-        fields.append(article);
+    const fieldsEl = document.getElementById("inspectorFields");
+    const soulChanged = state.selected !== inspectorViews.soul;
+    if (soulChanged) {
+        resetInspectorViews();
+        inspectorViews.soul = state.selected;
+        fieldsEl.replaceChildren();
+        for (const group of groupInspectorFields(data?.raw || {})) {
+            const type = group.type || typeOfValue(group.value, group.id);
+            const entry = buildFieldEntry(group.id, group.label, group.value, type, { collapsed: group.collapsed });
+            inspectorViews.fields.set(group.id, entry);
+            fieldsEl.append(entry.article);
+        }
+        updateRawInspector(data, true);
+        return;
     }
+    updateInspectorFields(data);
+    updateRawInspector(data);
 }
 
 function renderList() {
@@ -1053,4 +1357,4 @@ function init() {
 
 if (typeof document !== "undefined") init();
 
-export { gridStep, prepareGraph, previewValue, settleGraph, typeOfValue };
+export { gridStep, jsonDiffPaths, normalizePreviewJson, prepareGraph, previewValue, settleGraph, typeOfValue };
