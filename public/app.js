@@ -207,7 +207,6 @@ function updateStats(data, latencyMs) {
         if (data.connections) {
             const live = data.connections.live ?? data.connections.current ?? 0;
             document.getElementById('liveClients').textContent = live;
-            document.getElementById('totalConnections').textContent = data.connections.total;
         }
 
         if (data.storage) {

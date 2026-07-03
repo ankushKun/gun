@@ -275,7 +275,6 @@ export class GunPeerObject {
     if (stats) {
       this.stats = {
         startTime: stats.startTime || this.startTime,
-        totalConnections: stats.totalConnections || 0,
         messagesProcessed: stats.messagesProcessed || 0,
         bytesTransferred: stats.bytesTransferred || 0,
         graphNodes: stats.graphNodes || 0,
@@ -283,7 +282,6 @@ export class GunPeerObject {
     } else {
       this.stats = {
         startTime: this.startTime,
-        totalConnections: 0,
         messagesProcessed: 0,
         bytesTransferred: 0,
         graphNodes: 0,
@@ -316,24 +314,22 @@ export class GunPeerObject {
       lastSampleTime: stored?.lastSampleTime ?? 0,
     };
     this.throughput.samples = pruneThroughputSamples(this.throughput.samples, Date.now());
-    await this.persistThroughput();
   }
 
   async alarm() {
     await this.initialized;
-    await this.recordThroughputSample();
+    this.recordThroughputSample();
     await this.evictOldGraphDataIfNeeded();
     await this.syncRemoteMesh();
     await this.state.storage.setAlarm(Date.now() + THROUGHPUT_ALARM_MS);
   }
 
-  async recordThroughputSample(now = Date.now()) {
+  recordThroughputSample(now = Date.now()) {
     const tp = this.throughput;
     if (!tp.lastSampleTime) {
       tp.lastMessages = this.stats.messagesProcessed;
       tp.lastBytes = this.stats.bytesTransferred;
       tp.lastSampleTime = now;
-      await this.persistThroughput();
       return;
     }
 
@@ -343,7 +339,6 @@ export class GunPeerObject {
       tp.lastBytes = this.stats.bytesTransferred;
       tp.lastSampleTime = now;
       tp.samples = pruneThroughputSamples(tp.samples, now);
-      await this.persistThroughput();
       return;
     }
 
@@ -361,11 +356,6 @@ export class GunPeerObject {
     tp.lastBytes = this.stats.bytesTransferred;
     tp.lastSampleTime = now;
     tp.samples = pruneThroughputSamples(tp.samples, now);
-    await this.persistThroughput();
-  }
-
-  persistThroughput() {
-    return this.state.storage.put("throughput", this.throughput);
   }
 
   async syncGraphNodeCountIfNeeded() {
@@ -398,7 +388,7 @@ export class GunPeerObject {
     }
 
     if (url.pathname === "/api/stats") {
-      await this.recordThroughputSample();
+      this.recordThroughputSample();
       return json(this.statsPayload());
     }
 
@@ -501,8 +491,6 @@ export class GunPeerObject {
 
     server.accept();
     this.connections.set(connectionId, server);
-    this.stats.totalConnections += 1;
-    await this.persistStats();
 
     server.addEventListener("message", (event) => {
       this.handleRawMessage(event.data, server).catch(() => {
@@ -533,12 +521,10 @@ export class GunPeerObject {
     try {
       payload = JSON.parse(text);
     } catch {
-      await this.persistStats();
       return json({ err: "invalid json" }, { status: 400 });
     }
 
     const replies = await this.processPayload(payload);
-    await this.persistStats();
     return json(replies.length === 1 ? replies[0] : replies);
   }
 
@@ -552,7 +538,6 @@ export class GunPeerObject {
       payload = JSON.parse(text);
     } catch {
       safeSend(sender, { err: "invalid json" });
-      await this.persistStats();
       return;
     }
 
@@ -560,8 +545,6 @@ export class GunPeerObject {
     for (const reply of replies) {
       safeSend(sender, reply);
     }
-
-    await this.persistStats();
   }
 
   async processPayload(payload, sender) {
@@ -588,8 +571,6 @@ export class GunPeerObject {
   }
 
   async mergeGraph(graph) {
-    await this.evictOldGraphDataIfNeeded();
-
     for (const [soul, incomingNode] of Object.entries(graph)) {
       if (!incomingNode || typeof incomingNode !== "object") {
         continue;
@@ -597,14 +578,18 @@ export class GunPeerObject {
 
       const key = nodeKey(soul);
       const stored = await this.state.storage.get(key);
-      if (!stored) {
-        this.stats.graphNodes += 1;
-      }
       const existingNode = stored || {
         _: { "#": soul, ">": {} },
       };
       const merged = mergeNode(soul, existingNode, incomingNode);
+      if (stored && nodesEqual(stored, merged)) {
+        continue;
+      }
       await this.putNode(key, merged);
+      if (!stored) {
+        this.stats.graphNodes += 1;
+        await this.persistStats();
+      }
     }
 
     await this.evictOldGraphDataIfNeeded();
@@ -705,7 +690,6 @@ export class GunPeerObject {
     this.startTime = Date.now();
     this.stats = {
       startTime: this.startTime,
-      totalConnections: 0,
       messagesProcessed: 0,
       bytesTransferred: 0,
       graphNodes: 0,
@@ -718,7 +702,6 @@ export class GunPeerObject {
     };
     this.peerList = [];
     await this.persistStats();
-    await this.persistThroughput();
     await this.persistPeerList();
     return { ok: true };
   }
@@ -740,14 +723,8 @@ export class GunPeerObject {
 
   async e2eSeed() {
     await this.state.storage.put("peerList", [{ id: "p1", url: "https://example.com/gun" }]);
-    await this.state.storage.put("throughput", {
-      samples: [{ t: Date.now(), msg: 1, byte: 2 }],
-      lastMessages: 0,
-      lastBytes: 0,
-      lastSampleTime: Date.now(),
-    });
     await this.loadPeerList();
-    await this.loadThroughput();
+    this.throughput.samples = [{ t: Date.now(), msg: 1, byte: 2 }];
     return { ok: true };
   }
 
@@ -755,7 +732,7 @@ export class GunPeerObject {
     return {
       stats: await this.state.storage.get("stats"),
       peerList: await this.state.storage.get("peerList"),
-      throughput: await this.state.storage.get("throughput"),
+      throughput: this.throughput,
     };
   }
 
@@ -1301,7 +1278,6 @@ export class GunPeerObject {
       connections: {
         live,
         current: live,
-        total: this.stats.totalConnections,
         activePeers: live,
       },
       performance: {
@@ -1339,6 +1315,10 @@ export class GunPeerObject {
   persistStats() {
     return this.state.storage.put("stats", this.stats);
   }
+}
+
+function nodesEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function mergeNode(soul, existingNode, incomingNode) {

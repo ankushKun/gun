@@ -1100,7 +1100,6 @@ function renderStatus(message) {
         `${state.graph.edges.filter((edge) => !edge.exiting).length} references`,
         state.graph.nodes.some((node) => node.ghost && !node.exiting) ? `${state.graph.nodes.filter((node) => node.ghost && !node.exiting).length} missing targets` : "",
         state.graph.truncated ? `limited to ${MAX_NODES}` : "",
-        "drag nodes · drag background · scroll to zoom",
     ].filter(Boolean).join(" · ");
 }
 
@@ -1294,6 +1293,8 @@ function initPanelToggles() {
     const inspectorInner = inspector?.querySelector(".explorer-inspector-inner");
     const sidebarBtn = document.getElementById("toggleSidebarBtn");
     const inspectorBtn = document.getElementById("toggleInspectorBtn");
+    const scrim = document.getElementById("panelScrim");
+    const narrow = window.matchMedia("(max-width: 850px)");
     if (!main || !sidebar || !inspector || !sidebarInner || !inspectorInner || !sidebarBtn || !inspectorBtn) return;
 
     const saved = loadPanelState();
@@ -1303,6 +1304,12 @@ function initPanelToggles() {
     function applyPanels() {
         main.classList.toggle("sidebar-hidden", !sidebarOpen);
         main.classList.toggle("inspector-hidden", !inspectorOpen);
+        const panelsOpen = narrow.matches && (sidebarOpen || inspectorOpen);
+        main.classList.toggle("panels-open", panelsOpen);
+        if (scrim) {
+            scrim.hidden = !panelsOpen;
+            scrim.setAttribute("aria-hidden", String(!panelsOpen));
+        }
         sidebarBtn.setAttribute("aria-pressed", String(sidebarOpen));
         inspectorBtn.setAttribute("aria-pressed", String(inspectorOpen));
         sidebarBtn.setAttribute("aria-expanded", String(sidebarOpen));
@@ -1312,19 +1319,31 @@ function initPanelToggles() {
         sidebarInner.setAttribute("aria-hidden", String(!sidebarOpen));
         inspectorInner.setAttribute("aria-hidden", String(!inspectorOpen));
         savePanelState(sidebarOpen, inspectorOpen);
-        requestAnimationFrame(resize);
+        requestAnimationFrame(() => {
+            resize();
+            if (state.ready) fitGraph();
+        });
     }
 
     sidebarBtn.addEventListener("click", () => {
         sidebarOpen = !sidebarOpen;
+        if (sidebarOpen && narrow.matches) inspectorOpen = false;
         if (!sidebarOpen && sidebarInner.contains(document.activeElement)) canvas.focus();
         applyPanels();
     });
     inspectorBtn.addEventListener("click", () => {
         inspectorOpen = !inspectorOpen;
+        if (inspectorOpen && narrow.matches) sidebarOpen = false;
         if (!inspectorOpen && inspectorInner.contains(document.activeElement)) canvas.focus();
         applyPanels();
     });
+    scrim?.addEventListener("click", () => {
+        sidebarOpen = false;
+        inspectorOpen = false;
+        canvas.focus();
+        applyPanels();
+    });
+    narrow.addEventListener("change", applyPanels);
     applyPanels();
 }
 
@@ -1332,7 +1351,16 @@ function init() {
     canvas = document.getElementById("graphCanvas");
     ctx = canvas.getContext("2d");
     bindCanvas();
-    new ResizeObserver(resize).observe(canvas);
+    const stage = canvas.parentElement;
+    let resizeFitTimer;
+    if (stage) {
+        new ResizeObserver(() => {
+            resize();
+            if (!state.ready) return;
+            clearTimeout(resizeFitTimer);
+            resizeFitTimer = setTimeout(fitGraph, 100);
+        }).observe(stage);
+    }
     document.getElementById("fitBtn").addEventListener("click", fitGraph);
     document.getElementById("refreshBtn").addEventListener("click", () => loadGraph());
     document.getElementById("searchInput").addEventListener("input", (event) => {
@@ -1349,7 +1377,10 @@ function init() {
     document.getElementById("closeInspectorBtn").addEventListener("click", clearSelection);
     initPanelToggles();
     initPeerUrlPanel();
-    loadGraph({ fit: true });
+    requestAnimationFrame(() => {
+        resize();
+        loadGraph({ fit: true });
+    });
     connectLive();
     // ponytail: Gun broadcasts writes; this slow pass only catches storage eviction/removal.
     setInterval(() => loadGraph({ quiet: true }), 15_000);

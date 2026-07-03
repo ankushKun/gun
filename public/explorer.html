@@ -42,6 +42,7 @@
             </div>
 
             <section class="explorer-stage" aria-label="Interactive graph">
+                <div id="panelScrim" class="explorer-scrim" hidden aria-hidden="true"></div>
                 <canvas id="graphCanvas" tabindex="0" aria-label="Gun graph. Use the node list to navigate accessibly."></canvas>
                 <div class="explorer-legend" aria-hidden="true">
                     <span><i class="legend-node"></i>stored node</span>
@@ -87,6 +88,7 @@
 
         <footer id="statusBar" class="explorer-status">
             <span id="statusMessage" class="explorer-status__message">loading graph…</span>
+            <span class="explorer-status__hints" aria-hidden="true"> · drag nodes · drag background · scroll to zoom</span>
             <div class="peer-url-panel">
                 <button type="button" id="peerUrlToggle" class="peer-url-toggle" aria-expanded="false">
                     <span class="peer-url-chevron" aria-hidden="true">&lt;</span>

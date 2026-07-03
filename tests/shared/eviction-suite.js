@@ -112,7 +112,7 @@ export function storageEvictionSuite(helpers) {
         const system = await helpers.readSystemKeys();
         expect(system.stats).not.toBeNull();
         expect(system.peerList).toEqual([{ id: "p1", url: "https://example.com/gun" }]);
-        expect(system.throughput).not.toBeNull();
+        expect(system.throughput?.samples?.length).toBeGreaterThan(0);
 
         console.log("Writing 5 more nodes to confirm eviction still runs under continued pressure ...");
         for (let i = 0; i < 5; i++) {
