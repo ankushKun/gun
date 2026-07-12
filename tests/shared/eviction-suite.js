@@ -112,7 +112,10 @@ export function storageEvictionSuite(helpers) {
         const system = await helpers.readSystemKeys();
         expect(system.stats).not.toBeNull();
         expect(system.peerList).toEqual([{ id: "p1", url: "https://example.com/gun" }]);
+        // e2e seed plants a sample; live sampling is /api/stats-driven (not a 1Hz alarm).
         expect(system.throughput?.samples?.length).toBeGreaterThan(0);
+        const stats = await helpers.fetchStats();
+        expect(stats.throughput?.windowMs).toBe(300_000);
 
         console.log("Writing 5 more nodes to confirm eviction still runs under continued pressure ...");
         for (let i = 0; i < 5; i++) {

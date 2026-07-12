@@ -8,9 +8,11 @@ const JSON_HEADERS = {
 };
 
 const THROUGHPUT_MAX_POINTS = 60;
-const THROUGHPUT_WINDOW_MS = THROUGHPUT_MAX_POINTS * 1000;
-const THROUGHPUT_ALARM_MS = 1000;
+// ponytail: sample on /api/stats (~5s dashboard poll), not a 1Hz DO alarm (~86k req/day).
+const THROUGHPUT_SAMPLE_MS = 5000;
+const THROUGHPUT_WINDOW_MS = THROUGHPUT_MAX_POINTS * THROUGHPUT_SAMPLE_MS;
 const THROUGHPUT_GAP_MS = 120_000;
+const MESH_ALARM_MS = 5 * 60 * 1000;
 
 const MAX_MESH_PEERS = 20;
 const STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
@@ -264,7 +266,6 @@ export class GunPeerObject {
   constructor(state, env) {
     this.state = state;
     this.env = env;
-    this.connections = new Map();
     this.remotePeers = new Map();
     this.startTime = Date.now();
     this.initialized = this.initialize();
@@ -293,7 +294,18 @@ export class GunPeerObject {
     await this.loadThroughput();
     await this.loadPeerList();
     await this.syncRemoteMesh();
-    await this.state.storage.setAlarm(Date.now() + THROUGHPUT_ALARM_MS);
+    await this.scheduleMeshAlarmIfNeeded();
+  }
+
+  async scheduleMeshAlarmIfNeeded() {
+    if (!this.peerList?.length) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
+    const existing = await this.state.storage.getAlarm();
+    if (existing == null) {
+      await this.state.storage.setAlarm(Date.now() + MESH_ALARM_MS);
+    }
   }
 
   async loadPeerList() {
@@ -318,10 +330,17 @@ export class GunPeerObject {
 
   async alarm() {
     await this.initialized;
-    this.recordThroughputSample();
-    await this.evictOldGraphDataIfNeeded();
+    // ponytail: mesh-only; throughput samples come from /api/stats. Ceiling: 288 alarms/day if peers configured.
+    if (!this.peerList?.length) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     await this.syncRemoteMesh();
-    await this.state.storage.setAlarm(Date.now() + THROUGHPUT_ALARM_MS);
+    if (this.peerList.length) {
+      await this.state.storage.setAlarm(Date.now() + MESH_ALARM_MS);
+    } else {
+      await this.state.storage.deleteAlarm();
+    }
   }
 
   recordThroughputSample(now = Date.now()) {
@@ -342,7 +361,7 @@ export class GunPeerObject {
       return;
     }
 
-    if (elapsed < THROUGHPUT_ALARM_MS * 0.9) {
+    if (elapsed < THROUGHPUT_SAMPLE_MS * 0.9) {
       return;
     }
 
@@ -487,29 +506,40 @@ export class GunPeerObject {
   async handleWebSocket() {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    const connectionId = crypto.randomUUID();
 
-    server.accept();
-    this.connections.set(connectionId, server);
-
-    server.addEventListener("message", (event) => {
-      this.handleRawMessage(event.data, server).catch(() => {
-        safeSend(server, { err: "message processing failed" });
-      });
-    });
-
-    server.addEventListener("close", () => {
-      this.connections.delete(connectionId);
-    });
-
-    server.addEventListener("error", () => {
-      this.connections.delete(connectionId);
-    });
+    // Hibernation API: DO can sleep while clients stay connected (cuts free-tier duration).
+    this.state.acceptWebSocket(server);
+    server.serializeAttachment({ id: crypto.randomUUID() });
 
     return new Response(null, {
       status: 101,
       webSocket: client,
     });
+  }
+
+  async webSocketMessage(ws, message) {
+    await this.initialized;
+    try {
+      await this.handleRawMessage(message, ws);
+    } catch {
+      safeSend(ws, { err: "message processing failed" });
+    }
+  }
+
+  async webSocketClose(ws, code, reason) {
+    try {
+      ws.close(code, reason);
+    } catch {
+      // already closed
+    }
+  }
+
+  async webSocketError(ws) {
+    try {
+      ws.close(1011, "WebSocket error");
+    } catch {
+      // already closed
+    }
   }
 
   async handleHttpMessage(request) {
@@ -703,6 +733,7 @@ export class GunPeerObject {
     this.peerList = [];
     await this.persistStats();
     await this.persistPeerList();
+    await this.state.storage.deleteAlarm();
     return { ok: true };
   }
 
@@ -725,6 +756,7 @@ export class GunPeerObject {
     await this.state.storage.put("peerList", [{ id: "p1", url: "https://example.com/gun" }]);
     await this.loadPeerList();
     this.throughput.samples = [{ t: Date.now(), msg: 1, byte: 2 }];
+    await this.scheduleMeshAlarmIfNeeded();
     return { ok: true };
   }
 
@@ -733,6 +765,7 @@ export class GunPeerObject {
       stats: await this.state.storage.get("stats"),
       peerList: await this.state.storage.get("peerList"),
       throughput: this.throughput,
+      alarm: await this.state.storage.getAlarm(),
     };
   }
 
@@ -1093,6 +1126,7 @@ export class GunPeerObject {
     this.peerList.push(entry);
     await this.persistPeerList();
     await this.connectRemotePeer(entry);
+    await this.scheduleMeshAlarmIfNeeded();
     return { ok: true, peer: { ...entry, meshStatus: entry.meshStatus || "connecting" } };
   }
 
@@ -1110,6 +1144,7 @@ export class GunPeerObject {
 
     this.disconnectRemotePeer(id);
     await this.persistPeerList();
+    await this.scheduleMeshAlarmIfNeeded();
     return { ok: true };
   }
 
@@ -1249,7 +1284,7 @@ export class GunPeerObject {
   }
 
   broadcast(message, sender) {
-    for (const socket of this.connections.values()) {
+    for (const socket of this.state.getWebSockets()) {
       if (socket !== sender) {
         safeSend(socket, message);
       }
@@ -1262,7 +1297,7 @@ export class GunPeerObject {
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
     const days = Math.floor(hours / 24);
-    const live = this.connections.size;
+    const live = this.state.getWebSockets().length;
     const bytesUsed = this.state.storage.sql?.databaseSize ?? null;
 
     return {
@@ -1660,6 +1695,9 @@ if (typeof WebSocketPair !== "undefined" && typeof console !== "undefined" && co
     5_000,
   );
   console.assert(pruned.length === 1 && pruned[0].t === 50_000, "throughput prune keeps in-window samples");
+  console.assert(THROUGHPUT_SAMPLE_MS === 5000, "stats-driven sample interval");
+  console.assert(THROUGHPUT_WINDOW_MS === 300_000, "60 samples × 5s = 5min window");
+  console.assert(MESH_ALARM_MS === 300_000, "mesh maintenance every 5min");
   console.assert(isBlockedHost("127.0.0.1"), "blocks loopback");
   console.assert(isBlockedHost("10.0.0.5"), "blocks private ip");
   console.assert(normalizePeerUrl("relay.example.com").url.endsWith("/gun"), "normalizes gun path");

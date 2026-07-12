@@ -1,5 +1,6 @@
 const GRAPH_MAX_POINTS = 60;
-const GRAPH_WINDOW_MS = GRAPH_MAX_POINTS * 1000;
+const GRAPH_SAMPLE_MS = 5000;
+const GRAPH_WINDOW_MS = GRAPH_MAX_POINTS * GRAPH_SAMPLE_MS;
 
 // Format bytes to human readable
 function formatBytes(bytes) {
@@ -279,11 +280,26 @@ function init() {
         ro.observe(canvas);
     }
 
-    fetchStats();
-    setInterval(fetchStats, 1000);
+    let statsTimer = null;
+    const startStatsPolling = () => {
+        if (statsTimer != null) return;
+        fetchStats();
+        statsTimer = setInterval(fetchStats, GRAPH_SAMPLE_MS);
+    };
+    const stopStatsPolling = () => {
+        if (statsTimer == null) return;
+        clearInterval(statsTimer);
+        statsTimer = null;
+    };
+
+    startStatsPolling();
 
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) fetchStats();
+        if (document.hidden) {
+            stopStatsPolling();
+        } else {
+            startStatsPolling();
+        }
     });
 }
 
@@ -305,13 +321,13 @@ window.addEventListener('offline', () => {
     redrawThroughputGraph(lastGraph.samples, lastGraph.windowMs);
 });
 
-// ponytail: self-check time-based graph x
+// ponytail: self-check time-based graph x (5-minute window at 5s samples)
 if (typeof console !== 'undefined' && console.assert) {
     const w = 600;
     const now = 100_000;
-    const windowMs = 60_000;
-    console.assert(sampleX(now - 30_000, now, windowMs, w) === w / 2, 'mid-window sample at 50%');
+    const windowMs = 300_000;
+    console.assert(sampleX(now - 150_000, now, windowMs, w) === w / 2, 'mid-window sample at 50%');
     console.assert(sampleX(now, now, windowMs, w) === w, 'now at right edge');
-    console.assert(sampleX(now - 60_000, now, windowMs, w) === 0, 'oldest at left edge');
+    console.assert(sampleX(now - 300_000, now, windowMs, w) === 0, 'oldest at left edge');
     console.assert(graphScale([0, 0, 0]) === 1, 'all-zero scale should be 1');
 }

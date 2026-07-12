@@ -180,4 +180,15 @@ describe("graph API", () => {
     expect(node.refs).toContainEqual({ field: "friend", to: "graph/bob" });
     expect(node.raw).toBeTruthy();
   });
+
+  it("does not schedule a perpetual throughput alarm when peerList is empty", async () => {
+    await helpers.resetPeerStorage();
+    const system = await helpers.readSystemKeys();
+    expect(system.peerList ?? []).toEqual([]);
+    expect(system.alarm ?? null).toBeNull();
+
+    const stats = await helpers.fetchStats();
+    expect(stats.throughput.windowMs).toBe(300_000);
+    expect(stats.throughput.maxPoints).toBe(60);
+  });
 });

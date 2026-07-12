@@ -40,7 +40,7 @@ function gunGetMessage(soul) {
   };
 }
 
-/** Write via WebSocket /gun — same path real Gun clients use (updates throughput graph). */
+/** Write via WebSocket /gun — same path real Gun clients use. */
 export async function putGraphNode(soul, payloadSize, timestamp) {
   const message = JSON.stringify(gunPutMessage(soul, payloadSize, timestamp));
   const ws = new WebSocket(gunPeerWsUrl(BASE_URL));
@@ -119,6 +119,13 @@ export async function fetchStats() {
     throw new Error(`stats failed: ${response.status}`);
   }
   return response.json();
+}
+
+/** Two /api/stats hits spaced past the 5s sample floor (alarm no longer samples). */
+export async function sampleThroughput(gapMs = 4600) {
+  await fetchStats();
+  await new Promise((resolve) => setTimeout(resolve, gapMs));
+  return fetchStats();
 }
 
 export async function storageBytesUsed() {
