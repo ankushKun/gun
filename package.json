@@ -5,8 +5,8 @@
   "type": "module",
   "main": "src/worker.js",
   "scripts": {
-    "dev": "WRANGLER_LOG_PATH=.wrangler/logs CLOUDFLARE_TELEMETRY_DISABLED=1 wrangler dev",
-    "build": "WRANGLER_LOG_PATH=.wrangler/logs CLOUDFLARE_TELEMETRY_DISABLED=1 wrangler deploy --dry-run --outdir dist",
+    "dev": "CLOUDFLARE_TELEMETRY_DISABLED=1 cf dev",
+    "build": "CLOUDFLARE_TELEMETRY_DISABLED=1 cf build",
     "deploy": "cf deploy",
     "seed-peer": "node scripts/seed-peer.mjs",
     "drain-peer": "node scripts/drain-peer.mjs",

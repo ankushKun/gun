@@ -10,7 +10,7 @@ npm install
 npm run dev
 ```
 
-Dashboard at the Wrangler dev URL, usually `http://localhost:8787`.
+Dashboard at the `cf dev` URL, usually `http://localhost:8787`.
 Gun clients should use the `/gun` peer endpoint:
 
 ```js
@@ -30,6 +30,22 @@ npm run build
 ```bash
 npm run deploy
 ```
+
+Pushes to `main` also deploy through Workers Builds (`npx cf deploy`).
+
+## config
+
+`cloudflare.config.ts` is the only Worker config, used by `cf dev`, `cf build`,
+and `cf deploy`. `wrangler.config.ts` only holds bundler settings (assets dir);
+`cf` still uses Wrangler as its bundler, so keep the `wrangler` dev dependency.
+
+`npm test` runs `cf dev --mode test`, a separate local worker (`gun-test`) with
+small eviction thresholds and the e2e reset token, so tests never touch
+`npm run dev` data.
+
+Durable Object classes are declared in `exports` (this replaces Wrangler
+`migrations`). To rename or remove `GunPeerObject`, turn its entry into a
+`renamed` / `deleted` tombstone rather than deleting it.
 
 ## endpoints
 

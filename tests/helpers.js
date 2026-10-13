@@ -96,7 +96,7 @@ export async function waitForServer(timeoutMs = 60_000) {
         return;
       }
     } catch {
-      // wrangler still starting
+      // dev server still starting
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }

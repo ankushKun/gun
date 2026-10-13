@@ -19,7 +19,7 @@ const LOCAL_DO_DIR = path.join(
   "state",
   "v3",
   "do",
-  "gun-peer-server-GunPeerObject",
+  "gun-GunPeerObject",
 );
 
 function usage() {
@@ -30,7 +30,7 @@ Use drain-peer for gradual Gun.js tombstone deletes instead.
 
 Options:
   --url <base>   Deployed worker origin (e.g. https://gun.ankush.one)
-  --local        Delete local wrangler DO sqlite files (stop dev server first)
+  --local        Delete local `cf dev` DO sqlite files (stop dev server first)
   --yes          Skip confirmation prompt
 
 Remote auth (one required when --url is set):
@@ -117,7 +117,7 @@ async function main() {
   }
 
   if (!opts.local && !opts.url) {
-    console.error("pass --url <worker> for deployed storage or --local for wrangler dev files\n");
+    console.error("pass --url <worker> for deployed storage or --local for cf dev files\n");
     usage();
     process.exit(1);
   }

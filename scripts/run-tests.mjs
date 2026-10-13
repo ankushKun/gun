@@ -12,7 +12,8 @@ const {
 
 const port = process.env.E2E_PORT || "8799";
 const baseUrl = process.env.E2E_BASE_URL || `http://127.0.0.1:${port}`;
-const persistDir = path.join(root, ".wrangler", "e2e");
+// `cf dev --mode test` runs as worker "gun-test", so its DO state never mixes with `npm run dev`.
+const persistDir = path.join(root, ".wrangler", "state", "v3", "do", "gun-test-GunPeerObject");
 const e2eToken = process.env.E2E_RESET_TOKEN || "local-e2e-only";
 
 async function waitForReady(url, timeoutMs = 60_000) {
@@ -60,24 +61,12 @@ async function startDev() {
 
   devProcess = spawn(
     "npx",
-    [
-      "wrangler",
-      "dev",
-      "--port",
-      port,
-      "--persist-to",
-      persistDir,
-      "--var",
-      `STORAGE_EVICT_AT_BYTES:${STORAGE_EVICT_AT_BYTES}`,
-      "--var",
-      `STORAGE_EVICT_BYTES:${STORAGE_EVICT_BYTES}`,
-      "--var",
-      "E2E_RESET_TOKEN:local-e2e-only",
-    ],
+    ["cf", "dev", "--mode", "test", "--port", port],
     {
       cwd: root,
       env: {
         ...process.env,
+        E2E_RESET_TOKEN: e2eToken,
         WRANGLER_LOG_PATH: path.join(root, ".wrangler", "logs"),
         CLOUDFLARE_TELEMETRY_DISABLED: "1",
       },
@@ -101,7 +90,7 @@ function stopDev() {
 async function main() {
   let exitCode = 1;
   try {
-    console.log(`Starting wrangler dev on ${baseUrl} ...`);
+    console.log(`Starting cf dev --mode test on ${baseUrl} ...`);
     console.log(`Open the dashboard here during tests (not :8787): ${baseUrl}`);
     await startDev();
     console.log("Running tests ...");
