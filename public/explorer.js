@@ -1,6 +1,14 @@
 import { groupInspectorFields } from "./graph-inspector.js";
 
 const MAX_NODES = 220;
+const LIST_LIMIT = 500;
+// ponytail: live puts patch only the changed souls; full reloads are a slow visible-only safety net.
+const FULL_REFRESH_MS = 5 * 60 * 1000;
+const STALE_ON_SHOW_MS = 60 * 1000;
+const LIVE_PATCH_MS = 1500;
+const LIVE_PATCH_MAX_SOULS = 50;
+const LIVE_RECONNECT_MIN_MS = 1500;
+const LIVE_RECONNECT_MAX_MS = 60 * 1000;
 const NODE_RADIUS = 13;
 const PHYSICS_FLOOR = 0.3;
 const LABEL_GAP = 26;
@@ -89,6 +97,9 @@ let liveTimer;
 let refreshTimer;
 let liveRefreshTimer;
 let lastLiveRefresh = 0;
+let lastFullLoad = 0;
+let liveReconnectDelay = LIVE_RECONNECT_MIN_MS;
+const pendingLiveSouls = new Set();
 let searchTimer;
 
 const peer = { gunUrl: null, origin: null };
@@ -247,6 +258,57 @@ function prepareGraph(data, previous = { nodes: [], edges: [] }, animateChanges 
         node.mass = nodeMass(node.degree);
     }
     return { nodes, edges, truncated: Boolean(data.truncated) };
+}
+
+function rowOf(node) {
+    return { soul: node.soul, label: node.label, updated: node.updated };
+}
+
+/**
+ * Fold a `roots=<dirty souls>&depth=0` subgraph into the current view.
+ * Dirty souls missing from the patch were tombstoned or evicted, so they drop out.
+ * Returns null when the result would exceed MAX_NODES (caller does a full reload).
+ */
+function mergeLivePatch(graph, rows, patch, dirtySouls, allowNew = true) {
+    const dirty = new Set(dirtySouls);
+    const fresh = new Map((patch.nodes || []).filter((node) => !node.ghost).map((node) => [node.soul, node]));
+    const ghosts = new Map((patch.nodes || []).filter((node) => node.ghost).map((node) => [node.soul, node]));
+    const current = graph.nodes.filter((node) => !node.exiting);
+    const present = new Set(current.map((node) => node.soul));
+
+    const nodes = current
+        .filter((node) => !dirty.has(node.soul) || fresh.has(node.soul) || node.ghost)
+        .map((node) => fresh.get(node.soul) || node);
+    if (allowNew) {
+        for (const node of fresh.values()) if (!present.has(node.soul)) nodes.push(node);
+    }
+
+    const souls = new Set(nodes.map((node) => node.soul));
+    const edges = graph.edges
+        .filter((edge) => !edge.exiting && !dirty.has(edge.from) && souls.has(edge.from) && souls.has(edge.to))
+        .map(({ from, to, field }) => ({ from, to, field }));
+    for (const edge of patch.edges || []) {
+        if (!souls.has(edge.from)) continue;
+        if (!souls.has(edge.to)) {
+            const ghost = ghosts.get(edge.to);
+            if (!ghost) continue;
+            nodes.push(ghost);
+            souls.add(edge.to);
+        }
+        edges.push(edge);
+    }
+    if (nodes.length > MAX_NODES) return null;
+
+    const listed = new Set(rows.map((row) => row.soul));
+    const nextRows = rows
+        .filter((row) => !dirty.has(row.soul) || fresh.has(row.soul))
+        .map((row) => (fresh.has(row.soul) ? rowOf(fresh.get(row.soul)) : row));
+    if (allowNew) {
+        for (const node of fresh.values()) if (!listed.has(node.soul)) nextRows.push(rowOf(node));
+    }
+    nextRows.sort((a, b) => (b.updated || 0) - (a.updated || 0) || a.soul.localeCompare(b.soul));
+
+    return { nodes, edges, rows: nextRows.slice(0, LIST_LIMIT), truncated: graph.truncated };
 }
 
 function tickPhysics(nodes, edges, strength, pinned) {
@@ -1136,20 +1198,25 @@ async function loadGraph({ fit = false, quiet = false } = {}) {
     try {
         const q = state.query;
         const depth = q ? 1 : 0;
-        const graphPath = `/api/graph/subgraph?maxNodes=${MAX_NODES}&depth=${depth}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
-        const soulsPath = q
-            ? `/api/graph/souls?limit=500&sort=updated&q=${encodeURIComponent(q)}`
-            : "/api/graph/souls?limit=500&sort=updated";
-        const [souls, graph, stats] = await Promise.all([
-            api(soulsPath),
+        const qParam = q ? `&q=${encodeURIComponent(q)}` : "";
+        const graphPath = `/api/graph/subgraph?maxNodes=${MAX_NODES}&depth=${depth}&list=${LIST_LIMIT}${qParam}`;
+        // A full load covers anything queued for a live patch.
+        pendingLiveSouls.clear();
+        const liveOpen = liveSocket?.readyState === WebSocket.OPEN;
+        const [graph, stats] = await Promise.all([
             api(graphPath),
-            api("/api/stats"),
+            liveOpen ? null : api("/api/stats"),
         ]);
+        // ponytail: older peers ignore `list`; only they cost a second listing call.
+        const souls = graph.souls
+            ? { souls: graph.souls }
+            : await api(`/api/graph/souls?limit=${LIST_LIMIT}&sort=updated${qParam}`);
+        lastFullLoad = Date.now();
         state.rows = souls.souls || [];
         const selectedExists = !state.selected || graph.nodes.some((node) => node.soul === state.selected);
         state.graph = prepareGraph(graph, state.ready ? state.graph : undefined, state.ready);
         if (!state.ready) settleGraph(state.graph);
-        if (!liveSocket || liveSocket.readyState !== WebSocket.OPEN) {
+        if (stats) {
             document.getElementById("peerStatus").textContent = stats.status || "online";
             document.getElementById("peerStatus").className = `explorer-peer ${stats.status === "online" ? "online" : ""}`;
         }
@@ -1182,29 +1249,86 @@ function connectLive() {
         liveSocket.close();
         liveSocket = null;
     }
-    liveSocket = new WebSocket(peerGunWsUrl());
-    liveSocket.addEventListener("open", () => {
+    const socket = new WebSocket(peerGunWsUrl());
+    liveSocket = socket;
+    socket.addEventListener("open", () => {
+        liveReconnectDelay = LIVE_RECONNECT_MIN_MS;
         document.getElementById("peerStatus").textContent = "live";
         document.getElementById("peerStatus").className = "explorer-peer online";
     });
-    liveSocket.addEventListener("message", (event) => {
+    socket.addEventListener("message", (event) => {
         try {
             const messages = JSON.parse(event.data);
-            if (!(Array.isArray(messages) ? messages : [messages]).some((message) => message?.put)) return;
-            if (liveRefreshTimer) return;
-            liveRefreshTimer = setTimeout(() => {
-                liveRefreshTimer = null;
-                lastLiveRefresh = Date.now();
-                loadGraph({ quiet: true });
-            }, Math.max(90, 400 - (Date.now() - lastLiveRefresh)));
+            for (const message of Array.isArray(messages) ? messages : [messages]) {
+                if (!message?.put || typeof message.put !== "object") continue;
+                for (const soul of Object.keys(message.put)) {
+                    // Past the cap a full reload happens anyway, so stop growing the set.
+                    if (pendingLiveSouls.size > LIVE_PATCH_MAX_SOULS) break;
+                    pendingLiveSouls.add(soul);
+                }
+            }
+            scheduleLivePatch();
         } catch {}
     });
-    liveSocket.addEventListener("close", () => {
+    socket.addEventListener("close", () => {
+        // Only the current socket reconnects; a socket we replaced must not restart the loop.
+        if (liveSocket !== socket) return;
         document.getElementById("peerStatus").textContent = "reconnecting";
         document.getElementById("peerStatus").className = "explorer-peer";
-        liveTimer = setTimeout(connectLive, 1500);
+        liveTimer = setTimeout(connectLive, liveReconnectDelay);
+        liveReconnectDelay = Math.min(liveReconnectDelay * 2, LIVE_RECONNECT_MAX_MS);
     });
-    liveSocket.addEventListener("error", () => liveSocket.close());
+    socket.addEventListener("error", () => socket.close());
+}
+
+function scheduleLivePatch() {
+    if (!pendingLiveSouls.size || liveRefreshTimer || document.hidden) return;
+    liveRefreshTimer = setTimeout(() => {
+        liveRefreshTimer = null;
+        applyLivePatch();
+    }, Math.max(90, LIVE_PATCH_MS - (Date.now() - lastLiveRefresh)));
+}
+
+async function applyLivePatch() {
+    if (state.loading || !state.ready) {
+        scheduleLivePatch();
+        return;
+    }
+    const souls = [...pendingLiveSouls];
+    pendingLiveSouls.clear();
+    lastLiveRefresh = Date.now();
+    if (!souls.length) return;
+    if (souls.length > LIVE_PATCH_MAX_SOULS || souls.some((soul) => soul.includes(","))) {
+        loadGraph({ quiet: true });
+        return;
+    }
+
+    let patch;
+    try {
+        patch = await api(`/api/graph/subgraph?roots=${souls.map(encodeURIComponent).join(",")}&depth=0&maxNodes=500`);
+    } catch {
+        return;
+    }
+    if (state.loading) return;
+    const merged = mergeLivePatch(state.graph, state.rows, patch, souls, !state.query);
+    if (!merged) {
+        loadGraph({ quiet: true });
+        return;
+    }
+    state.rows = merged.rows;
+    state.graph = prepareGraph(merged, state.graph, true);
+    if (state.selected && souls.includes(state.selected)) {
+        if (merged.nodes.some((node) => node.soul === state.selected && !node.ghost)) {
+            state.inspector = await api(`/api/graph/node?soul=${encodeURIComponent(state.selected)}`).catch(() => state.inspector);
+        } else {
+            state.selected = null;
+            state.inspector = null;
+        }
+    }
+    renderList();
+    renderInspector();
+    restartSimulation(0);
+    renderStatus();
 }
 
 async function fetchPeerGraph() {
@@ -1382,10 +1506,17 @@ function init() {
         loadGraph({ fit: true });
     });
     connectLive();
-    // ponytail: Gun broadcasts writes; this slow pass only catches storage eviction/removal.
-    setInterval(() => loadGraph({ quiet: true }), 15_000);
+    // ponytail: live puts are patched in place; this slow pass only catches eviction and missed messages.
+    setInterval(() => {
+        if (!document.hidden) loadGraph({ quiet: true });
+    }, FULL_REFRESH_MS);
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) return;
+        if (Date.now() - lastFullLoad > STALE_ON_SHOW_MS) loadGraph({ quiet: true });
+        else scheduleLivePatch();
+    });
 }
 
 if (typeof document !== "undefined") init();
 
-export { gridStep, jsonDiffPaths, normalizePreviewJson, prepareGraph, previewValue, settleGraph, typeOfValue };
+export { gridStep, jsonDiffPaths, mergeLivePatch, normalizePreviewJson, prepareGraph, previewValue, settleGraph, typeOfValue };

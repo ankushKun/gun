@@ -13,5 +13,13 @@ tag = "v1"
 new_sqlite_classes = ["GunPeerObject"]
 
 [vars]
-STORAGE_EVICT_AT_BYTES = "9663676416"
-STORAGE_EVICT_BYTES = "1073741824"
+# Free plan: 5 GB total. Evict from 4 GiB, freeing 512 MiB per pass.
+STORAGE_LIMIT_BYTES = "5000000000"
+STORAGE_EVICT_AT_BYTES = "4294967296"
+STORAGE_EVICT_BYTES = "536870912"
+
+# ponytail: sampled so request patterns show up in `cf observability telemetry query`
+# without spending the free plan's daily log event allowance on every WebSocket message.
+[observability]
+enabled = true
+head_sampling_rate = 0.1
