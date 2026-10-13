@@ -378,7 +378,20 @@ export class GunPeerObject {
     this.nodeCache = new NodeCache();
     this.seenMessages = new Map();
     this.sqlUsage = { rowsRead: 0, rowsWritten: 0, since: this.startTime };
-    this.initialized = this.initialize();
+    this.initialized = null;
+    // Warm up early; requests await ready() themselves and surface any error.
+    this.ready().catch(() => {});
+  }
+
+  /** Init once per instance, but retry after a failure (e.g. quota-blocked storage) instead of caching the rejection. */
+  ready() {
+    if (!this.initialized) {
+      this.initialized = this.initialize().catch((error) => {
+        this.initialized = null;
+        throw error;
+      });
+    }
+    return this.initialized;
   }
 
   ensureSchema() {
@@ -506,7 +519,7 @@ export class GunPeerObject {
   }
 
   async alarm() {
-    await this.initialized;
+    await this.ready();
     // ponytail: mesh upkeep + migration only; throughput samples come from /api/stats.
     // Ceiling: 288 alarms/day if peers configured.
     const migrationDue =
@@ -569,7 +582,7 @@ export class GunPeerObject {
   }
 
   async fetch(request) {
-    await this.initialized;
+    await this.ready();
 
     const url = new URL(request.url);
     if (request.method === "OPTIONS") {
@@ -694,7 +707,7 @@ export class GunPeerObject {
   }
 
   async webSocketMessage(ws, message) {
-    await this.initialized;
+    await this.ready();
     try {
       await this.handleRawMessage(message, ws);
     } catch {
