@@ -8,9 +8,11 @@ assets = { directory = "./public", binding = "ASSETS" }
 name = "GUN_PEER"
 class_name = "GunPeerObject"
 
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["GunPeerObject"]
+# Declarative exports replace the old v1 migration (new_sqlite_classes). Cloudflare now
+# requires every provisioned DO class here; keep in sync with cloudflare.config.ts.
+[exports.GunPeerObject]
+type = "durable-object"
+storage = "sqlite"
 
 [vars]
 # Free plan: 5 GB total. Evict from 4 GiB, freeing 512 MiB per pass.
