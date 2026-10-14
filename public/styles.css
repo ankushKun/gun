@@ -1799,3 +1799,46 @@ td:last-child {
         transition: none;
     }
 }
+
+
+/* Live (memory-only) souls in the explorer list. */
+.explorer-live-tag {
+    margin-left: auto;
+    font-style: normal;
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    opacity: 0.75;
+}
+
+.explorer-peer.paused::before {
+    background: #e0a526;
+}
+
+.explorer-peer.paused {
+    color: #e0a526;
+}
+
+/* Daily row budget meters on the dashboard. */
+.budget-stage {
+    display: inline-block;
+    margin-left: 0.5rem;
+    font-size: 0.75rem;
+    opacity: 0.8;
+}
+
+.budget-stage.is-paused {
+    color: #e0a526;
+    opacity: 1;
+}
+
+.storage-meter__fill.is-warn {
+    background: #e0a526;
+}
+
+.storage-meter__fill.is-danger {
+    background: #d9534f;
+}

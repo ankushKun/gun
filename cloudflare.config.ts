@@ -31,6 +31,11 @@ export default defineConfig(({ mode }) => {
 				STORAGE_LIMIT_BYTES: bindings.text("5000000000"),
 				STORAGE_EVICT_AT_BYTES: bindings.text(String(test ? TEST_EVICT_AT_BYTES : 4294967296)),
 				STORAGE_EVICT_BYTES: bindings.text(String(test ? TEST_EVICT_BYTES : 536870912)),
+				// Presence-style souls (cursors, heartbeats, reactions) live in memory only.
+				EPHEMERAL_PREFIXES: bindings.text("ankush-one/live"),
+				// Free tier daily SQLite row limits; the object sheds load in stages before them.
+				ROWS_READ_DAILY_LIMIT: bindings.text("5000000"),
+				ROWS_WRITTEN_DAILY_LIMIT: bindings.text("100000"),
 				...(test
 					? { E2E_RESET_TOKEN: bindings.text(process.env.E2E_RESET_TOKEN || "local-e2e-only") }
 					: {}),

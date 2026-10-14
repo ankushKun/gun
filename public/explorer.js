@@ -167,9 +167,22 @@ function setActivePeer(gunUrl) {
 function api(path) {
     return fetch(`${peerOrigin()}${path}`).then(async (response) => {
         const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.error) throw new Error(data.error || `request failed (${response.status})`);
+        if (!response.ok || data.error) {
+            const error = new Error(data.error || `request failed (${response.status})`);
+            // 429: the peer is protecting its daily row budget; live patches of in-memory souls still work.
+            error.paused = response.status === 429 || Boolean(data.paused);
+            error.budget = data.budget;
+            throw error;
+        }
         return data;
     });
+}
+
+function budgetSummary(budget) {
+    if (!budget) return "";
+    const pct = Math.round((budget.fraction || 0) * 100);
+    const resets = budget.resetsAt ? new Date(budget.resetsAt).toISOString().slice(11, 16) : "00:00";
+    return `${pct}% of today's row budget used · resets ${resets} UTC`;
 }
 
 function hash(text) {
@@ -1099,7 +1112,9 @@ function renderInspector() {
     content.hidden = false;
     const graphNode = state.graph.nodes.find((node) => node.soul === state.selected);
     const data = state.inspector;
-    document.getElementById("inspectorKind").textContent = graphNode?.ghost && !data ? "missing target" : "stored node";
+    document.getElementById("inspectorKind").textContent = graphNode?.ghost && !data
+        ? "missing target"
+        : (data?.ephemeral || graphNode?.ephemeral) ? "live node (memory only)" : "stored node";
     document.getElementById("inspectorLabel").textContent = data?.label || graphNode?.label || state.selected;
     document.getElementById("inspectorSoul").textContent = state.selected;
     document.getElementById("inspectorMeta").textContent = data
@@ -1142,6 +1157,15 @@ function renderList() {
         const soul = document.createElement("span");
         soul.textContent = row.soul;
         button.append(label, soul);
+        if (row.ephemeral) {
+            // Memory-only live souls (cursors, presence) are never stored.
+            const tag = document.createElement("em");
+            tag.className = "explorer-live-tag";
+            tag.textContent = "live";
+            tag.title = "in memory only, not stored";
+            button.classList.add("is-live");
+            button.append(tag);
+        }
         button.addEventListener("click", () => selectNode(row.soul));
         list.append(button);
     }
@@ -1157,8 +1181,10 @@ function renderList() {
 function renderStatus(message) {
     const el = document.getElementById("statusMessage");
     if (!el) return;
+    const liveCount = state.graph.nodes.filter((node) => node.ephemeral && !node.exiting).length;
     el.textContent = message || [
-        `${state.graph.nodes.filter((node) => !node.ghost && !node.exiting).length} stored nodes`,
+        `${state.graph.nodes.filter((node) => !node.ghost && !node.exiting && !node.ephemeral).length} stored nodes`,
+        liveCount ? `${liveCount} live in memory` : "",
         `${state.graph.edges.filter((edge) => !edge.exiting).length} references`,
         state.graph.nodes.some((node) => node.ghost && !node.exiting) ? `${state.graph.nodes.filter((node) => node.ghost && !node.exiting).length} missing targets` : "",
         state.graph.truncated ? `limited to ${MAX_NODES}` : "",
@@ -1235,9 +1261,16 @@ async function loadGraph({ fit = false, quiet = false } = {}) {
         state.ready = true;
         renderStatus();
     } catch (error) {
-        document.getElementById("peerStatus").textContent = "error";
-        document.getElementById("peerStatus").className = "explorer-peer error";
-        renderStatus(error.message);
+        const peerStatus = document.getElementById("peerStatus");
+        if (error.paused) {
+            peerStatus.textContent = "paused";
+            peerStatus.className = "explorer-peer paused";
+            renderStatus(`${error.message} · ${budgetSummary(error.budget)}`);
+        } else {
+            peerStatus.textContent = "error";
+            peerStatus.className = "explorer-peer error";
+            renderStatus(error.message);
+        }
     } finally {
         state.loading = false;
     }

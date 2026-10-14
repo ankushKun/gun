@@ -41,6 +41,39 @@ const NODE_MIGRATION_KEY = "nodeMigration";
 const NODE_MIGRATION_BATCH = 100;
 const NODE_MIGRATION_INTERVAL_MS = 10 * 60 * 1000;
 
+// ponytail: souls under these prefixes are presence data (cursors, heartbeats,
+// reactions) that clients discard within seconds. They live in memory only, so a
+// mouse move never costs a SQLite row. Override with EPHEMERAL_PREFIXES (comma list).
+const DEFAULT_EPHEMERAL_PREFIXES = ["ankush-one/live"];
+const EPHEMERAL_TTL_MS = 10 * 60 * 1000;
+const EPHEMERAL_MAX_ENTRIES = 5000;
+const EPHEMERAL_MAX_BYTES = 24 * 1024 * 1024;
+
+// Free-tier daily limits for SQLite-backed Durable Objects. The guard sheds load in
+// stages well before them: Cloudflare blocks *every* storage call once a limit is
+// crossed, which took the whole relay down on 2026-10-13.
+const ROWS_READ_DAILY_LIMIT = 5_000_000;
+const ROWS_WRITTEN_DAILY_LIMIT = 100_000;
+const BUDGET_STAGES = [
+  { name: "explorer-paused", at: 0.5 }, // explorer listings and housekeeping stop
+  { name: "writes-paused", at: 0.8 }, // puts to stored souls are refused
+  { name: "reads-paused", at: 0.92 }, // uncached gets of stored souls are refused
+];
+const BUDGET_KEY = "rowBudget";
+const BUDGET_PERSIST_EVERY_ROWS = 500;
+const BUDGET_PERSIST_MIN_ROWS = 50;
+const BUDGET_PERSIST_EVERY_MS = 60_000;
+
+// Housekeeping: delete the rows that live souls left in SQL before they went
+// ephemeral, and collect tombstones nobody can resurrect any more.
+const HOUSEKEEPING_KEY = "housekeeping";
+const HOUSEKEEPING_INTERVAL_MS = 10 * 60 * 1000;
+const EPHEMERAL_SWEEP_BATCH = 500;
+const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const TOMBSTONE_GC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const TOMBSTONE_GC_BATCH = 500;
+const STORAGE_RETRY_MS = 60_000;
+
 const NODE_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS nodes (
     soul TEXT PRIMARY KEY,
@@ -139,6 +172,149 @@ class NodeCache {
       this.bytes -= entry.size;
       this.entries.delete(soul);
     }
+  }
+
+  clear() {
+    this.entries.clear();
+    this.bytes = 0;
+  }
+}
+
+function parseEphemeralPrefixes(raw) {
+  if (typeof raw !== "string") {
+    return [...DEFAULT_EPHEMERAL_PREFIXES];
+  }
+  const list = raw
+    .split(",")
+    .map((p) => p.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+  return list;
+}
+
+function utcDay(now = Date.now()) {
+  return new Date(now).toISOString().slice(0, 10);
+}
+
+function nextUtcMidnight(now = Date.now()) {
+  const d = new Date(now);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+}
+
+/** Where the daily row budget stands: stage name, rank (0 = ok) and fraction used. */
+function budgetStage(budget, limits) {
+  const fraction = Math.max(
+    limits.rowsRead > 0 ? budget.rowsRead / limits.rowsRead : 0,
+    limits.rowsWritten > 0 ? budget.rowsWritten / limits.rowsWritten : 0,
+  );
+  let stage = "ok";
+  let rank = 0;
+  BUDGET_STAGES.forEach((s, i) => {
+    if (fraction >= s.at) {
+      stage = s.name;
+      rank = i + 1;
+    }
+  });
+  return { stage, rank, fraction };
+}
+
+/**
+ * Memory-only graph nodes for presence-style souls. Insertion order is
+ * last-touched order (set() re-inserts), so expiry walks from the front.
+ */
+class EphemeralStore {
+  constructor(prefixes = DEFAULT_EPHEMERAL_PREFIXES, { ttlMs = EPHEMERAL_TTL_MS, maxEntries = EPHEMERAL_MAX_ENTRIES, maxBytes = EPHEMERAL_MAX_BYTES } = {}) {
+    this.prefixes = [...prefixes];
+    this.ttlMs = ttlMs;
+    this.maxEntries = maxEntries;
+    this.maxBytes = maxBytes;
+    this.entries = new Map();
+    this.bytes = 0;
+  }
+
+  matches(soul) {
+    return typeof soul === "string" && this.prefixes.some((p) => soul === p || soul.startsWith(`${p}/`));
+  }
+
+  /** The prefix root a soul belongs to, so parent refs stop being rebuilt there. */
+  rootOf(soul) {
+    return this.prefixes.find((p) => soul === p || soul.startsWith(`${p}/`)) ?? null;
+  }
+
+  get size() {
+    return this.entries.size;
+  }
+
+  get(soul, now = Date.now()) {
+    const entry = this.entries.get(soul);
+    if (!entry) {
+      return undefined;
+    }
+    if (now - entry.touched > this.ttlMs) {
+      this.delete(soul);
+      return undefined;
+    }
+    return entry;
+  }
+
+  set(soul, node, json, now = Date.now()) {
+    this.delete(soul);
+    const entry = { node, json, touched: now, updated: nodeUpdated(node), size: json.length };
+    this.entries.set(soul, entry);
+    this.bytes += entry.size;
+    this.sweep(now);
+    return entry;
+  }
+
+  /** Keep an entry alive without changing it (a parent whose child just moved). */
+  touch(soul, now = Date.now()) {
+    const entry = this.entries.get(soul);
+    if (!entry) {
+      return;
+    }
+    this.entries.delete(soul);
+    entry.touched = now;
+    this.entries.set(soul, entry);
+  }
+
+  delete(soul) {
+    const entry = this.entries.get(soul);
+    if (entry) {
+      this.bytes -= entry.size;
+      this.entries.delete(soul);
+    }
+  }
+
+  sweep(now = Date.now()) {
+    for (const [soul, entry] of this.entries) {
+      if (now - entry.touched > this.ttlMs) {
+        this.delete(soul);
+      } else {
+        break;
+      }
+    }
+    while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) {
+      const [oldest] = this.entries.keys();
+      this.delete(oldest);
+    }
+  }
+
+  /** Listing rows for the explorer, same shape as the SQL index rows. */
+  list({ prefix = "", query = "", now = Date.now() } = {}) {
+    this.sweep(now);
+    const rows = [];
+    for (const [soul, entry] of this.entries) {
+      if (prefix && !soul.startsWith(prefix)) {
+        continue;
+      }
+      if (query && !soul.toLowerCase().includes(query)) {
+        continue;
+      }
+      if (!nodeHasContent(entry.node)) {
+        continue;
+      }
+      rows.push({ soul, label: nodeLabel(entry.node, soul), updated: entry.updated, ephemeral: true });
+    }
+    return rows;
   }
 
   clear() {
@@ -376,22 +552,193 @@ export class GunPeerObject {
     this.remotePeers = new Map();
     this.startTime = Date.now();
     this.nodeCache = new NodeCache();
+    this.ephemeral = new EphemeralStore(parseEphemeralPrefixes(env?.EPHEMERAL_PREFIXES));
     this.seenMessages = new Map();
-    this.sqlUsage = { rowsRead: 0, rowsWritten: 0, since: this.startTime };
+    this.sqlUsage = { rowsRead: 0, rowsWritten: 0, since: this.startTime, byCategory: {} };
+    this.usageCategory = "gun";
+    // Rows counted today (UTC). Loaded from storage on init, persisted in chunks.
+    this.budget = { day: utcDay(), rowsRead: 0, rowsWritten: 0 };
+    this.budgetLoaded = false;
+    this.budgetDirty = { rows: 0, since: this.startTime };
+    this.budgetPersisting = false;
+    // Storage can be blocked by Cloudflare once a daily limit is crossed. Memory-only
+    // traffic keeps flowing while this says so; stored souls fail soft.
+    this.storageHealth = { ready: false, error: null, retryAt: 0 };
+    // In-memory defaults so handlers work even before (or without) storage.
+    this.stats = { startTime: this.startTime, messagesProcessed: 0, bytesTransferred: 0, graphNodes: 0 };
+    this.migration = { done: true, lastBatchAt: 0 };
+    this.housekeeping = { ephemeralSweepDone: false, lastSweepAt: 0, sweptRows: 0, lastTombstoneGcAt: 0, tombstonesCollected: 0 };
+    this.peerList = [];
+    this.throughput = { samples: [], lastMessages: 0, lastBytes: 0, lastSampleTime: 0 };
     this.initialized = null;
-    // Warm up early; requests await ready() themselves and surface any error.
     this.ready().catch(() => {});
   }
 
-  /** Init once per instance, but retry after a failure (e.g. quota-blocked storage) instead of caching the rejection. */
+  /**
+   * Init once per instance. A failed init (quota-blocked storage, say) is retried
+   * after STORAGE_RETRY_MS; until then requests run against memory only, so live
+   * cursors and presence keep relaying while stored souls answer with an error.
+   */
   ready() {
-    if (!this.initialized) {
-      this.initialized = this.initialize().catch((error) => {
-        this.initialized = null;
-        throw error;
-      });
+    if (this.initialized) {
+      return this.initialized;
     }
+    if (!this.storageHealth.ready && this.storageHealth.error && Date.now() < this.storageHealth.retryAt) {
+      return Promise.resolve();
+    }
+    this.initialized = this.initialize()
+      .then(() => {
+        this.storageHealth = { ready: true, error: null, retryAt: 0 };
+      })
+      .catch((error) => {
+        this.initialized = null;
+        this.storageHealth = {
+          ready: false,
+          error: String(error?.message || error),
+          retryAt: Date.now() + STORAGE_RETRY_MS,
+        };
+      });
     return this.initialized;
+  }
+
+  /** A runtime storage error: if it looks like the quota block, stop touching storage for a while. */
+  noteStorageError(error) {
+    const message = String(error?.message || error);
+    if (/quota|limit|exceeded|blocked|exhausted/i.test(message)) {
+      this.storageHealth = { ready: false, error: message, retryAt: Date.now() + STORAGE_RETRY_MS };
+      this.initialized = null;
+    }
+    return message;
+  }
+
+  budgetLimits() {
+    return {
+      rowsRead: Number(this.env?.ROWS_READ_DAILY_LIMIT) || ROWS_READ_DAILY_LIMIT,
+      rowsWritten: Number(this.env?.ROWS_WRITTEN_DAILY_LIMIT) || ROWS_WRITTEN_DAILY_LIMIT,
+    };
+  }
+
+  budgetState() {
+    this.rollBudgetDay();
+    const limits = this.budgetLimits();
+    return { ...budgetStage(this.budget, limits), limits };
+  }
+
+  rollBudgetDay(now = Date.now()) {
+    const day = utcDay(now);
+    if (day !== this.budget.day) {
+      this.budget = { day, rowsRead: 0, rowsWritten: 0 };
+      this.budgetDirty = { rows: 1, since: now };
+    }
+  }
+
+  /**
+   * May this request spend storage rows on `action`?
+   * explorer/housekeeping stop first, then writes to stored souls, then uncached reads.
+   */
+  canUseStorage(action) {
+    if (!this.storageHealth.ready) {
+      return false;
+    }
+    const ceiling = { explorer: 1, housekeeping: 1, write: 2, read: 3 }[action] ?? 3;
+    return this.budgetState().rank < ceiling;
+  }
+
+  budgetRefusal(action) {
+    const { stage } = this.budgetState();
+    const reason = this.storageHealth.ready ? `relay row budget stage "${stage}"` : "relay storage is blocked";
+    return `${reason}: ${action} paused until 00:00 UTC`;
+  }
+
+  countRows(rowsRead, rowsWritten) {
+    if (!rowsRead && !rowsWritten) {
+      return;
+    }
+    this.rollBudgetDay();
+    this.sqlUsage.rowsRead += rowsRead;
+    this.sqlUsage.rowsWritten += rowsWritten;
+    const cat = (this.sqlUsage.byCategory[this.usageCategory] ||= { rowsRead: 0, rowsWritten: 0 });
+    cat.rowsRead += rowsRead;
+    cat.rowsWritten += rowsWritten;
+    this.budget.rowsRead += rowsRead;
+    this.budget.rowsWritten += rowsWritten;
+    this.budgetDirty.rows += rowsRead + rowsWritten;
+    const elapsed = Date.now() - this.budgetDirty.since;
+    if (
+      this.budgetLoaded &&
+      this.storageHealth.ready &&
+      (this.budgetDirty.rows >= BUDGET_PERSIST_EVERY_ROWS ||
+        (this.budgetDirty.rows >= BUDGET_PERSIST_MIN_ROWS && elapsed >= BUDGET_PERSIST_EVERY_MS))
+    ) {
+      this.persistBudget().catch(() => {});
+    }
+  }
+
+  async persistBudget(force = false) {
+    if (this.budgetPersisting || !this.budgetLoaded) {
+      return;
+    }
+    if (!force && !this.budgetDirty.rows) {
+      return;
+    }
+    this.budgetPersisting = true;
+    try {
+      this.budgetDirty = { rows: 0, since: Date.now() };
+      await this.kvPut(BUDGET_KEY, { ...this.budget });
+      // The put itself is one row; leaving it unpersisted avoids a persist loop.
+      this.budgetDirty.rows = 0;
+    } catch (error) {
+      this.noteStorageError(error);
+    } finally {
+      this.budgetPersisting = false;
+    }
+  }
+
+  async loadBudget() {
+    if (this.budgetLoaded) {
+      return;
+    }
+    const stored = await this.kvGet(BUDGET_KEY);
+    this.rollBudgetDay();
+    if (stored && stored.day === this.budget.day) {
+      // Rows counted during this wake (before the load) stay on top of the stored total.
+      this.budget.rowsRead += stored.rowsRead || 0;
+      this.budget.rowsWritten += stored.rowsWritten || 0;
+    }
+    this.budgetLoaded = true;
+  }
+
+  /** Run `fn` with its rows attributed to `category` in the since-wake usage breakdown. */
+  async withUsage(category, fn) {
+    const previous = this.usageCategory;
+    this.usageCategory = category;
+    try {
+      return await fn();
+    } finally {
+      this.usageCategory = previous;
+    }
+  }
+
+  // KV calls on a SQLite-backed object are billed as rows too; count them.
+  async kvGet(key) {
+    this.countRows(Array.isArray(key) ? key.length : 1, 0);
+    return this.state.storage.get(key);
+  }
+
+  async kvPut(key, value) {
+    this.countRows(0, 1);
+    return this.state.storage.put(key, value);
+  }
+
+  async kvDelete(keys) {
+    this.countRows(0, Array.isArray(keys) ? keys.length : 1);
+    return this.state.storage.delete(keys);
+  }
+
+  async kvList(options) {
+    const page = await this.state.storage.list(options);
+    this.countRows(Math.max(1, page.size), 0);
+    return page;
   }
 
   ensureSchema() {
@@ -403,8 +750,7 @@ export class GunPeerObject {
   sqlAll(query, ...bindings) {
     const cursor = this.state.storage.sql.exec(query, ...bindings);
     const rows = cursor.toArray();
-    this.sqlUsage.rowsRead += cursor.rowsRead;
-    this.sqlUsage.rowsWritten += cursor.rowsWritten;
+    this.countRows(cursor.rowsRead, cursor.rowsWritten);
     return rows;
   }
 
@@ -413,31 +759,125 @@ export class GunPeerObject {
   }
 
   async initialize() {
-    this.ensureSchema();
-    const stats = await this.state.storage.get("stats");
-    if (stats) {
-      this.stats = {
-        startTime: stats.startTime || this.startTime,
-        messagesProcessed: stats.messagesProcessed || 0,
-        bytesTransferred: stats.bytesTransferred || 0,
-        graphNodes: stats.graphNodes || 0,
-      };
-    } else {
-      this.stats = {
-        startTime: this.startTime,
-        messagesProcessed: 0,
-        bytesTransferred: 0,
-        graphNodes: 0,
-      };
-      await this.persistStats();
-    }
+    await this.withUsage("system", async () => {
+      this.ensureSchema();
+      await this.loadBudget();
+      const stats = await this.kvGet("stats");
+      if (stats) {
+        this.stats = {
+          startTime: stats.startTime || this.startTime,
+          messagesProcessed: Math.max(stats.messagesProcessed || 0, this.stats.messagesProcessed),
+          bytesTransferred: Math.max(stats.bytesTransferred || 0, this.stats.bytesTransferred),
+          graphNodes: stats.graphNodes || 0,
+          lastEviction: stats.lastEviction,
+        };
+      } else {
+        await this.persistStats();
+      }
 
-    await this.loadNodeMigration();
-    await this.syncGraphNodeCountIfNeeded();
-    await this.loadThroughput();
-    await this.loadPeerList();
+      await this.loadNodeMigration();
+      await this.loadHousekeeping();
+      await this.syncGraphNodeCountIfNeeded();
+      await this.loadThroughput();
+      await this.loadPeerList();
+    });
     await this.syncRemoteMesh();
     await this.scheduleAlarm();
+  }
+
+  async loadHousekeeping() {
+    const stored = await this.kvGet(HOUSEKEEPING_KEY);
+    if (stored) {
+      this.housekeeping = { ...this.housekeeping, ...stored };
+    } else {
+      await this.kvPut(HOUSEKEEPING_KEY, this.housekeeping);
+    }
+  }
+
+  persistHousekeeping() {
+    return this.kvPut(HOUSEKEEPING_KEY, this.housekeeping);
+  }
+
+  /** Delete one batch of rows that live souls left in SQL before they became memory-only. */
+  async sweepEphemeralRows(limit = EPHEMERAL_SWEEP_BATCH) {
+    let deleted = 0;
+    for (const prefix of this.ephemeral.prefixes) {
+      if (deleted >= limit) {
+        break;
+      }
+      const lower = `${prefix}/`;
+      const upper = prefixUpperBound(lower);
+      const rows = this.sqlAll(
+        `SELECT soul FROM nodes WHERE soul = ? OR (soul >= ? AND soul < ?) LIMIT ?`,
+        prefix,
+        lower,
+        upper,
+        limit - deleted,
+      );
+      for (const row of rows) {
+        this.sqlRun("DELETE FROM nodes WHERE soul = ?", row.soul);
+        this.nodeCache.delete(row.soul);
+        deleted += 1;
+      }
+    }
+    this.housekeeping = {
+      ...this.housekeeping,
+      lastSweepAt: Date.now(),
+      ephemeralSweepDone: deleted < limit,
+      sweptRows: (this.housekeeping.sweptRows || 0) + deleted,
+    };
+    await this.persistHousekeeping();
+    if (deleted) {
+      this.stats.graphNodes = Math.max(0, (this.stats.graphNodes || 0) - deleted);
+      await this.persistStats();
+    }
+    return { deleted, done: this.housekeeping.ephemeralSweepDone };
+  }
+
+  /** Tombstones older than TOMBSTONE_TTL_MS: no client keeps data that long, so nothing can resurrect them. */
+  async collectTombstones(limit = TOMBSTONE_GC_BATCH, now = Date.now()) {
+    // ponytail: full scan (no index on dead rows), so once a day and only with budget to spare.
+    const rows = this.sqlAll(
+      "SELECT soul FROM nodes WHERE live = 0 AND updated < ? LIMIT ?",
+      now - TOMBSTONE_TTL_MS,
+      limit,
+    );
+    for (const row of rows) {
+      this.sqlRun("DELETE FROM nodes WHERE soul = ?", row.soul);
+      this.nodeCache.delete(row.soul);
+    }
+    this.housekeeping = {
+      ...this.housekeeping,
+      lastTombstoneGcAt: now,
+      tombstonesCollected: (this.housekeeping.tombstonesCollected || 0) + rows.length,
+    };
+    await this.persistHousekeeping();
+    if (rows.length) {
+      this.stats.graphNodes = Math.max(0, (this.stats.graphNodes || 0) - rows.length);
+      await this.persistStats();
+    }
+    return { collected: rows.length };
+  }
+
+  /** One housekeeping pass: migration batch, ephemeral sweep, tombstone GC, each only when due. */
+  async runHousekeeping({ force = false, now = Date.now() } = {}) {
+    const result = {};
+    if (!this.canUseStorage("housekeeping")) {
+      return { skipped: this.budgetRefusal("housekeeping") };
+    }
+    await this.withUsage("housekeeping", async () => {
+      const due = (last, interval) => force || now - (last || 0) >= interval * 0.9;
+      if (!this.migration.done && due(this.migration.lastBatchAt, NODE_MIGRATION_INTERVAL_MS)) {
+        result.migration = await this.migrateLegacyNodes();
+      }
+      if (!this.housekeeping.ephemeralSweepDone && due(this.housekeeping.lastSweepAt, HOUSEKEEPING_INTERVAL_MS)) {
+        result.sweep = await this.sweepEphemeralRows();
+      }
+      if (due(this.housekeeping.lastTombstoneGcAt, TOMBSTONE_GC_INTERVAL_MS)) {
+        result.tombstones = await this.collectTombstones(TOMBSTONE_GC_BATCH, now);
+      }
+    });
+    return result;
   }
 
   /** One alarm drives both mesh upkeep and legacy node migration; none when neither is needed. */
@@ -450,6 +890,10 @@ export class GunPeerObject {
     if (!this.migration.done) {
       due.push(Math.max(now + 1000, (this.migration.lastBatchAt || 0) + NODE_MIGRATION_INTERVAL_MS));
     }
+    if (!this.housekeeping.ephemeralSweepDone) {
+      due.push(Math.max(now + 1000, (this.housekeeping.lastSweepAt || 0) + HOUSEKEEPING_INTERVAL_MS));
+    }
+    due.push(Math.max(now + 1000, (this.housekeeping.lastTombstoneGcAt || 0) + TOMBSTONE_GC_INTERVAL_MS));
     if (!due.length) {
       await this.state.storage.deleteAlarm();
       return;
@@ -462,21 +906,21 @@ export class GunPeerObject {
   }
 
   async loadNodeMigration() {
-    let migration = await this.state.storage.get(NODE_MIGRATION_KEY);
+    let migration = await this.kvGet(NODE_MIGRATION_KEY);
     if (!migration) {
-      const legacy = await this.state.storage.list({ prefix: "node:", limit: 1 });
+      const legacy = await this.kvList({ prefix: "node:", limit: 1 });
       migration = { done: legacy.size === 0, lastBatchAt: 0 };
-      await this.state.storage.put(NODE_MIGRATION_KEY, migration);
+      await this.kvPut(NODE_MIGRATION_KEY, migration);
     }
     this.migration = migration;
   }
 
   /** Move one batch of pre-SQL `node:` KV entries into the nodes table. */
   async migrateLegacyNodes(limit = NODE_MIGRATION_BATCH) {
-    const page = await this.state.storage.list({ prefix: "node:", limit });
+    const page = await this.kvList({ prefix: "node:", limit });
     for (const [key, node] of page) {
       const soul = key.slice("node:".length);
-      if (!node || typeof node !== "object") {
+      if (!node || typeof node !== "object" || this.ephemeral.matches(soul)) {
         continue;
       }
       // DO NOTHING: a newer copy may already be in SQL from a put during migration.
@@ -485,11 +929,11 @@ export class GunPeerObject {
     }
     const keys = [...page.keys()];
     for (let i = 0; i < keys.length; i += 128) {
-      await this.state.storage.delete(keys.slice(i, i + 128));
+      await this.kvDelete(keys.slice(i, i + 128));
     }
 
     this.migration = { done: page.size < limit, lastBatchAt: Date.now() };
-    await this.state.storage.put(NODE_MIGRATION_KEY, this.migration);
+    await this.kvPut(NODE_MIGRATION_KEY, this.migration);
     if (this.migration.done) {
       // ponytail: one count after migration heals any drift in the graphNodes counter
       this.stats.graphNodes = this.sqlAll("SELECT COUNT(*) AS n FROM nodes")[0].n;
@@ -499,16 +943,16 @@ export class GunPeerObject {
   }
 
   async loadPeerList() {
-    const stored = await this.state.storage.get("peerList");
+    const stored = await this.kvGet("peerList");
     this.peerList = Array.isArray(stored) ? stored : [];
   }
 
   persistPeerList() {
-    return this.state.storage.put("peerList", this.peerList);
+    return this.kvPut("peerList", this.peerList);
   }
 
   async loadThroughput() {
-    const stored = await this.state.storage.get("throughput");
+    const stored = await this.kvGet("throughput");
     this.throughput = {
       samples: Array.isArray(stored?.samples) ? stored.samples : [],
       lastMessages: stored?.lastMessages ?? this.stats.messagesProcessed,
@@ -520,14 +964,13 @@ export class GunPeerObject {
 
   async alarm() {
     await this.ready();
-    // ponytail: mesh upkeep + migration only; throughput samples come from /api/stats.
-    // Ceiling: 288 alarms/day if peers configured.
-    const migrationDue =
-      !this.migration.done &&
-      Date.now() - (this.migration.lastBatchAt || 0) >= NODE_MIGRATION_INTERVAL_MS * 0.9;
-    if (migrationDue) {
-      await this.migrateLegacyNodes();
+    if (!this.storageHealth.ready) {
+      // Storage is blocked; the next successful init re-schedules.
+      return;
     }
+    // ponytail: mesh upkeep + housekeeping only; throughput samples come from /api/stats.
+    await this.runHousekeeping();
+    await this.persistBudget(true);
     if (this.peerList?.length) {
       await this.syncRemoteMesh();
     }
@@ -657,18 +1100,33 @@ export class GunPeerObject {
       if (url.pathname === "/api/e2e/migrate" && request.method === "POST") {
         return json(await this.e2eMigrate(url));
       }
+      if (url.pathname === "/api/e2e/budget" && request.method === "POST") {
+        return json(await this.e2eSetBudget(request));
+      }
+      if (url.pathname === "/api/e2e/housekeep" && request.method === "POST") {
+        return json(await this.runHousekeeping({ force: true }));
+      }
+      if (url.pathname === "/api/e2e/rows" && request.method === "POST") {
+        return json(await this.e2eSeedRows(request));
+      }
     }
 
-    if (url.pathname === "/api/graph/souls" && request.method === "GET") {
-      return json(await this.graphListSouls(url));
-    }
-
-    if (url.pathname === "/api/graph/node" && request.method === "GET") {
-      return json(await this.graphGetNode(url));
-    }
-
-    if (url.pathname === "/api/graph/subgraph" && request.method === "GET") {
-      return json(await this.graphSubgraph(url));
+    if (url.pathname.startsWith("/api/graph/") && request.method === "GET") {
+      return this.withUsage("explorer", async () => {
+        if (url.pathname === "/api/graph/souls") {
+          if (!this.canUseStorage("explorer")) {
+            return this.budgetPausedResponse("explorer");
+          }
+          return json(await this.graphListSouls(url));
+        }
+        if (url.pathname === "/api/graph/node") {
+          return json(await this.graphGetNode(url));
+        }
+        if (url.pathname === "/api/graph/subgraph") {
+          return this.graphSubgraph(url);
+        }
+        return new Response("not found", { status: 404, headers: SECURITY_HEADERS });
+      });
     }
 
     if (url.pathname === "/gun") {
@@ -690,6 +1148,27 @@ export class GunPeerObject {
     }
 
     return new Response("not found", { status: 404, headers: SECURITY_HEADERS });
+  }
+
+  budgetPausedResponse(action) {
+    return json(
+      { error: this.budgetRefusal(action), paused: true, budget: this.budgetPayload() },
+      { status: 429, headers: { "retry-after": String(Math.ceil((nextUtcMidnight() - Date.now()) / 1000)) } },
+    );
+  }
+
+  budgetPayload() {
+    const state = this.budgetState();
+    return {
+      day: this.budget.day,
+      rowsRead: this.budget.rowsRead,
+      rowsWritten: this.budget.rowsWritten,
+      limits: state.limits,
+      stage: state.stage,
+      fraction: Math.round(state.fraction * 1000) / 1000,
+      stages: BUDGET_STAGES,
+      resetsAt: nextUtcMidnight(),
+    };
   }
 
   async handleWebSocket() {
@@ -777,14 +1256,20 @@ export class GunPeerObject {
 
       if (message.put && typeof message.put === "object") {
         const id = typeof message["#"] === "string" && message["#"] ? message["#"] : null;
+        let refused = [];
         // Duplicate ids are mesh echoes of a put we already merged and relayed.
         if (!id || !this.markSeen(id)) {
-          const changed = await this.mergeGraph(message.put);
-          if (Object.keys(changed).length) {
-            this.relayPut(changed, sender, id);
+          const merge = await this.mergeGraph(message.put);
+          refused = merge.refused;
+          if (Object.keys(merge.changed).length) {
+            this.relayPut(merge.changed, sender, id);
           }
         }
-        replies.push({ "@": message["#"], ok: 1 });
+        if (refused.length) {
+          replies.push({ "@": message["#"], err: `${this.budgetRefusal("writes")} (${refused.length} not stored)` });
+        } else {
+          replies.push({ "@": message["#"], ok: 1 });
+        }
       }
 
       if (message.get && typeof message.get === "object") {
@@ -810,11 +1295,24 @@ export class GunPeerObject {
     return false;
   }
 
-  /** Cache → SQL → (until migrated) legacy KV. `legacy` marks a node still living in KV. */
-  async loadNodeEntry(soul) {
+  /**
+   * Memory (live souls) → cache → SQL → (until migrated) legacy KV.
+   * `legacy` marks a node still living in KV; `deferred` means the answer would
+   * have needed storage rows the budget (or a storage block) does not allow right now.
+   */
+  async loadNodeEntry(soul, { allowStorage = true } = {}) {
+    if (this.ephemeral.matches(soul)) {
+      const entry = this.ephemeral.get(soul);
+      return { node: entry?.node ?? null, json: entry?.json ?? null, legacy: false, ephemeral: true };
+    }
+
     const cached = this.nodeCache.get(soul);
     if (cached) {
       return { node: cached.node, json: cached.json, legacy: false };
+    }
+
+    if (!allowStorage) {
+      return { node: null, json: null, legacy: false, deferred: true };
     }
 
     const [row] = this.sqlAll("SELECT data FROM nodes WHERE soul = ?", soul);
@@ -825,7 +1323,7 @@ export class GunPeerObject {
     }
 
     if (!this.migration.done) {
-      const node = await this.state.storage.get(nodeKey(soul));
+      const node = await this.kvGet(nodeKey(soul));
       if (node) {
         return { node, json: JSON.stringify(node), legacy: true };
       }
@@ -835,41 +1333,108 @@ export class GunPeerObject {
     return { node: null, json: null, legacy: false };
   }
 
-  async loadNode(soul) {
-    return (await this.loadNodeEntry(soul)).node;
+  async loadNode(soul, options) {
+    return (await this.loadNodeEntry(soul, options)).node;
   }
 
-  /** Merge a put graph; returns only the souls whose stored node actually changed. */
+  /**
+   * Live souls are path-shaped (`…/cursors/home/<id>`). When the object wakes
+   * with an empty memory, a child put must put its key back into the parent
+   * room, or new visitors never learn who else is here.
+   */
+  rebuildEphemeralParents(soul, changed, now = Date.now()) {
+    const root = this.ephemeral.rootOf(soul);
+    let child = soul;
+    while (child !== root) {
+      const cut = child.lastIndexOf("/");
+      if (cut <= 0) {
+        break;
+      }
+      const parent = child.slice(0, cut);
+      const key = child.slice(cut + 1);
+      if (!this.ephemeral.matches(parent)) {
+        break;
+      }
+      const existing = this.ephemeral.get(parent, now);
+      const ref = existing?.node?.[key];
+      if (ref && typeof ref === "object" && ref["#"] === child) {
+        this.ephemeral.touch(parent, now);
+        break;
+      }
+      const patch = { _: { "#": parent, ">": { [key]: now } }, [key]: { "#": child } };
+      const merged = mergeNode(parent, existing?.node || { _: { "#": parent, ">": {} } }, patch);
+      this.ephemeral.set(parent, merged, JSON.stringify(merged), now);
+      changed[parent] = { ...(changed[parent] || {}), _: patch._, [key]: patch[key] };
+      child = parent;
+    }
+  }
+
+  /**
+   * Merge a put graph. `changed` holds only the souls whose node actually changed
+   * (what gets relayed); `refused` lists stored souls skipped because the row
+   * budget or a storage block does not allow writes right now.
+   */
   async mergeGraph(graph) {
     const changed = {};
+    const refused = [];
     let added = 0;
+    let wroteStorage = false;
+    const now = Date.now();
     for (const [soul, incomingNode] of Object.entries(graph)) {
       if (!incomingNode || typeof incomingNode !== "object") {
         continue;
       }
 
-      const existing = await this.loadNodeEntry(soul);
-      const merged = mergeNode(soul, existing.node || { _: { "#": soul, ">": {} } }, incomingNode);
-      const json = JSON.stringify(merged);
-      if (existing.node && existing.json === json) {
+      if (this.ephemeral.matches(soul)) {
+        const existing = this.ephemeral.get(soul, now);
+        const merged = mergeNode(soul, existing?.node || { _: { "#": soul, ">": {} } }, incomingNode);
+        const json = JSON.stringify(merged);
+        if (existing && existing.json === json) {
+          this.ephemeral.touch(soul, now);
+          continue;
+        }
+        this.ephemeral.set(soul, merged, json, now);
+        changed[soul] = incomingNode;
+        if (nodeHasContent(incomingNode)) {
+          this.rebuildEphemeralParents(soul, changed, now);
+        }
         continue;
       }
-      await this.putNode(soul, merged, json);
-      if (existing.legacy) {
-        await this.state.storage.delete(nodeKey(soul));
+
+      if (!this.canUseStorage("write")) {
+        refused.push(soul);
+        continue;
       }
-      if (!existing.node) {
-        added += 1;
+      try {
+        const existing = await this.loadNodeEntry(soul);
+        const merged = mergeNode(soul, existing.node || { _: { "#": soul, ">": {} } }, incomingNode);
+        const json = JSON.stringify(merged);
+        if (existing.node && existing.json === json) {
+          continue;
+        }
+        await this.putNode(soul, merged, json);
+        wroteStorage = true;
+        if (existing.legacy) {
+          await this.kvDelete(nodeKey(soul));
+        }
+        if (!existing.node) {
+          added += 1;
+        }
+        changed[soul] = incomingNode;
+      } catch (error) {
+        this.noteStorageError(error);
+        refused.push(soul);
       }
-      changed[soul] = incomingNode;
     }
 
     if (added) {
       this.stats.graphNodes += added;
-      await this.persistStats();
+      await this.persistStats().catch((error) => this.noteStorageError(error));
     }
-    await this.evictOldGraphDataIfNeeded();
-    return changed;
+    if (wroteStorage) {
+      await this.evictOldGraphDataIfNeeded();
+    }
+    return { changed, refused };
   }
 
   async putNode(soul, node, json) {
@@ -952,9 +1517,17 @@ export class GunPeerObject {
     await this.state.storage.deleteAll();
     this.ensureSchema();
     this.nodeCache.clear();
+    this.ephemeral.clear();
     this.seenMessages.clear();
     this.migration = { done: true, lastBatchAt: 0 };
-    await this.state.storage.put(NODE_MIGRATION_KEY, this.migration);
+    await this.kvPut(NODE_MIGRATION_KEY, this.migration);
+    this.housekeeping = { ephemeralSweepDone: true, lastSweepAt: 0, sweptRows: 0, lastTombstoneGcAt: Date.now(), tombstonesCollected: 0 };
+    await this.persistHousekeeping();
+    this.budget = { day: utcDay(), rowsRead: 0, rowsWritten: 0 };
+    this.budgetDirty = { rows: 0, since: Date.now() };
+    this.budgetLoaded = true;
+    await this.kvPut(BUDGET_KEY, { ...this.budget });
+    this.sqlUsage = { rowsRead: 0, rowsWritten: 0, since: Date.now(), byCategory: {} };
     this.startTime = Date.now();
     this.stats = {
       startTime: this.startTime,
@@ -981,7 +1554,7 @@ export class GunPeerObject {
   }
 
   async e2eSeed() {
-    await this.state.storage.put("peerList", [{ id: "p1", url: "https://example.com/gun" }]);
+    await this.kvPut("peerList", [{ id: "p1", url: "https://example.com/gun" }]);
     await this.loadPeerList();
     this.throughput.samples = [{ t: Date.now(), msg: 1, byte: 2 }];
     await this.scheduleAlarm();
@@ -993,10 +1566,10 @@ export class GunPeerObject {
     const body = await request.json().catch(() => ({}));
     const nodes = body.nodes && typeof body.nodes === "object" ? body.nodes : {};
     for (const [soul, node] of Object.entries(nodes)) {
-      await this.state.storage.put(nodeKey(soul), node);
+      await this.kvPut(nodeKey(soul), node);
     }
     this.migration = { done: false, lastBatchAt: 0 };
-    await this.state.storage.put(NODE_MIGRATION_KEY, this.migration);
+    await this.kvPut(NODE_MIGRATION_KEY, this.migration);
     this.nodeCache.clear();
     return { ok: true, count: Object.keys(nodes).length };
   }
@@ -1008,11 +1581,48 @@ export class GunPeerObject {
 
   async e2eSystemSnapshot() {
     return {
-      stats: await this.state.storage.get("stats"),
-      peerList: await this.state.storage.get("peerList"),
+      stats: await this.kvGet("stats"),
+      peerList: await this.kvGet("peerList"),
       throughput: this.throughput,
       alarm: await this.state.storage.getAlarm(),
+      budget: await this.kvGet(BUDGET_KEY),
+      housekeeping: await this.kvGet(HOUSEKEEPING_KEY),
     };
+  }
+
+  /** Test hook: pretend today's budget already stands at these counts. */
+  async e2eSetBudget(request) {
+    const body = await request.json().catch(() => ({}));
+    this.budget = {
+      day: utcDay(),
+      rowsRead: Math.max(0, Number(body.rowsRead) || 0),
+      rowsWritten: Math.max(0, Number(body.rowsWritten) || 0),
+    };
+    this.budgetLoaded = true;
+    await this.persistBudget(true);
+    return { ok: true, budget: this.budgetPayload() };
+  }
+
+  /** Test hook: write raw rows straight into SQL (even under a live prefix) to exercise housekeeping. */
+  async e2eSeedRows(request) {
+    const body = await request.json().catch(() => ({}));
+    const nodes = body.nodes && typeof body.nodes === "object" ? body.nodes : {};
+    let count = 0;
+    for (const [soul, node] of Object.entries(nodes)) {
+      if (!node || typeof node !== "object") {
+        continue;
+      }
+      this.sqlRun(UPSERT_NODE_SQL, ...nodeRowValues(soul, node, JSON.stringify(node)));
+      this.nodeCache.delete(soul);
+      count += 1;
+    }
+    this.stats.graphNodes = this.sqlAll("SELECT COUNT(*) AS n FROM nodes")[0].n;
+    await this.persistStats();
+    if (body.reopenSweep) {
+      this.housekeeping = { ...this.housekeeping, ephemeralSweepDone: false, lastSweepAt: 0 };
+      await this.persistHousekeeping();
+    }
+    return { ok: true, count };
   }
 
   async graphListSouls(url) {
@@ -1046,9 +1656,13 @@ export class GunPeerObject {
         ORDER BY soul LIMIT ?`,
       ...params,
       limit + 1,
-    );
-    const truncated = rows.length > limit;
-    const souls = rows.slice(0, limit);
+    ).filter((row) => !this.ephemeral.matches(row.soul));
+    const memory = this.ephemeral
+      .list({ prefix, query })
+      .filter((row) => !startCursor || row.soul > startCursor);
+    const merged = [...rows, ...memory].sort((a, b) => a.soul.localeCompare(b.soul));
+    const truncated = merged.length > limit;
+    const souls = merged.slice(0, limit);
     return {
       souls,
       cursor: truncated ? souls[souls.length - 1].soul : undefined,
@@ -1065,10 +1679,14 @@ export class GunPeerObject {
         ORDER BY updated DESC, soul LIMIT ?`,
       ...params,
       limit + 1,
+    ).filter((row) => !this.ephemeral.matches(row.soul));
+    // ponytail: live souls come from memory at zero rows and sort in by their Gun state.
+    const merged = [...rows, ...this.ephemeral.list({ prefix, query })].sort(
+      (a, b) => b.updated - a.updated || a.soul.localeCompare(b.soul),
     );
     return {
-      souls: rows.slice(0, limit),
-      truncated: rows.length > limit,
+      souls: merged.slice(0, limit),
+      truncated: merged.length > limit,
     };
   }
 
@@ -1078,7 +1696,11 @@ export class GunPeerObject {
       return { error: "soul required" };
     }
 
-    const node = await this.loadNode(soul);
+    const entry = await this.loadNodeEntry(soul, { allowStorage: this.canUseStorage("explorer") });
+    if (entry.deferred) {
+      return { error: this.budgetRefusal("explorer"), paused: true, soul };
+    }
+    const node = entry.node;
     if (!nodeHasContent(node)) {
       return { error: "not found", soul };
     }
@@ -1088,6 +1710,7 @@ export class GunPeerObject {
       soul,
       label: nodeLabel(node, soul),
       updated: nodeUpdated(node),
+      ephemeral: Boolean(entry.ephemeral),
       fields,
       refs,
       raw: node,
@@ -1119,6 +1742,12 @@ export class GunPeerObject {
       .map((s) => s.trim())
       .filter(Boolean);
 
+    // Paused: only a live patch whose roots are all in memory costs nothing, so it still goes through.
+    const allowStorage = this.canUseStorage("explorer");
+    if (!allowStorage && (!seedSouls.length || listLimit || !seedSouls.every((soul) => this.ephemeral.matches(soul)))) {
+      return this.budgetPausedResponse("explorer");
+    }
+
     if (!seedSouls.length || listLimit) {
       listed = this.graphListSoulsByUpdated(Math.max(maxNodes, listLimit), prefix, query);
     }
@@ -1127,7 +1756,7 @@ export class GunPeerObject {
       truncated = listed.truncated || listed.souls.length > maxNodes;
     }
 
-    const subgraph = await this.buildSubgraph(seedSouls, depth, maxNodes);
+    const subgraph = await this.buildSubgraph(seedSouls, depth, maxNodes, allowStorage);
     if (truncated) {
       subgraph.truncated = true;
     }
@@ -1135,10 +1764,11 @@ export class GunPeerObject {
       subgraph.souls = listed.souls.slice(0, listLimit);
       subgraph.soulsTruncated = listed.truncated || listed.souls.length > listLimit;
     }
-    return subgraph;
+    subgraph.liveNodes = this.ephemeral.size;
+    return json(subgraph);
   }
 
-  async buildSubgraph(seedSouls, maxDepth, maxNodes) {
+  async buildSubgraph(seedSouls, maxDepth, maxNodes, allowStorage = true) {
     const nodesMap = new Map();
     const edges = [];
     const edgeKeys = new Set();
@@ -1154,7 +1784,8 @@ export class GunPeerObject {
         continue;
       }
 
-      const node = await this.loadNode(soul);
+      const entry = await this.loadNodeEntry(soul, { allowStorage });
+      const node = entry.node;
       if (!nodeHasContent(node)) {
         continue;
       }
@@ -1166,6 +1797,7 @@ export class GunPeerObject {
         fields: nodePreviewFields(node),
         updated: nodeUpdated(node),
         bytes: nodeBytes(node),
+        ...(entry.ephemeral ? { ephemeral: true } : {}),
       });
 
       for (const edge of extractGunRefs(node, soul)) {
@@ -1222,7 +1854,16 @@ export class GunPeerObject {
       return { "@": requestId, put: null, err: "soul required" };
     }
 
-    const node = await this.loadNode(soul);
+    let entry;
+    try {
+      entry = await this.loadNodeEntry(soul, { allowStorage: this.canUseStorage("read") });
+    } catch (error) {
+      return { "@": requestId, put: null, err: this.noteStorageError(error) };
+    }
+    if (entry.deferred) {
+      return { "@": requestId, put: null, err: this.budgetRefusal("reads") };
+    }
+    const node = entry.node;
     if (!node) {
       return { "@": requestId, put: null };
     }
@@ -1521,10 +2162,17 @@ export class GunPeerObject {
         evictAtBytes: this.storageLimits().evictAt,
         evictBytes: this.storageLimits().evictBytes,
         graphNodes: this.stats.graphNodes,
+        // Memory-only live souls (cursors, presence); never stored.
+        liveNodes: this.ephemeral.size,
+        liveBytes: this.ephemeral.bytes,
+        livePrefixes: this.ephemeral.prefixes,
         lastEviction: this.stats.lastEviction ?? null,
-        // SQL rows since this instance woke; KV calls (stats, peers) are not included.
-        sqlUsage: { ...this.sqlUsage },
+        // Rows since this instance woke (SQL and KV), with a per-source breakdown.
+        sqlUsage: { ...this.sqlUsage, byCategory: { ...this.sqlUsage.byCategory } },
+        budget: this.budgetPayload(),
+        health: { ...this.storageHealth },
         migration: { ...this.migration },
+        housekeeping: { ...this.housekeeping },
       },
       mesh: {
         peers: this.peerListWithMeshStatus(),
@@ -1539,7 +2187,7 @@ export class GunPeerObject {
   }
 
   persistStats() {
-    return this.state.storage.put("stats", this.stats);
+    return this.kvPut("stats", this.stats);
   }
 }
 
@@ -1828,6 +2476,10 @@ function nodeLabel(node, soul) {
 
 export {
   NodeCache,
+  EphemeralStore,
+  budgetStage,
+  parseEphemeralPrefixes,
+  utcDay,
   prefixUpperBound,
   soulFilterSql,
   nodeOldestTimestamp,

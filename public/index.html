@@ -56,6 +56,34 @@
                     <td id="graphNodes" class="mono">0</td>
                 </tr>
                 <tr>
+                    <td>live nodes (memory)</td>
+                    <td id="liveNodes" class="mono">0</td>
+                </tr>
+                <tr>
+                    <td>rows read today</td>
+                    <td>
+                        <span id="rowsReadToday" class="mono">0</span>
+                        <span id="rowsReadPercent" class="storage-percent mono"></span>
+                        <div class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Rows read today">
+                            <div id="rowsReadMeterFill" class="storage-meter__fill"></div>
+                        </div>
+                    </td>
+                </tr>
+                <tr>
+                    <td>rows written today</td>
+                    <td>
+                        <span id="rowsWrittenToday" class="mono">0</span>
+                        <span id="rowsWrittenPercent" class="storage-percent mono"></span>
+                        <div class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Rows written today">
+                            <div id="rowsWrittenMeterFill" class="storage-meter__fill"></div>
+                        </div>
+                    </td>
+                </tr>
+                <tr>
+                    <td>budget stage</td>
+                    <td><span id="budgetStage" class="mono">ok</span><span id="budgetResets" class="budget-stage"></span></td>
+                </tr>
+                <tr>
                     <td>storage used</td>
                     <td>
                         <span id="storageUsed" class="mono">0 B</span>
@@ -76,6 +104,7 @@
             </tbody>
         </table>
         <p class="section-note" id="storageEvictionNote"></p>
+        <p class="section-note" id="budgetNote"></p>
 
         <hr class="stats-divider">
 

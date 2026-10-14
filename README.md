@@ -60,6 +60,44 @@ Durable Object classes are declared in `exports` (this replaces Wrangler
 - `/api/graph/subgraph` - nodes + reference edges for the explorer (`roots`, `prefix`, `depth`, `maxNodes`, `list` to include the recent soul list in the same call)
 - `/explorer.html` - graph explorer UI
 - `/health` - health check
+- `/api/e2e/*` - test hooks, only with `E2E_RESET_TOKEN` (reset, nodes, seed, system, legacy, migrate, budget, housekeep, rows)
+
+## live souls (memory only)
+
+Souls under the prefixes in `EPHEMERAL_PREFIXES` (default `ankush-one/live`) are
+presence data: cursors, heartbeats, reactions, "listening now". Clients discard
+them within seconds, so the peer keeps them in memory only and never spends a
+SQLite row on them. They are merged with Gun's HAM state, relayed to every other
+socket, and served to gets like any other node. When the object wakes with an
+empty memory, a child put puts its key back into its parent (`…/cursors/home`),
+so new visitors still learn who else is around. Entries expire after 10 minutes
+without an update. The explorer lists them with a `live` tag.
+
+Rows those souls left in SQL before this change are swept 500 at a time, every
+10 minutes, by the housekeeping alarm. Tombstones (nodes whose fields are all
+`null`) older than 30 days are collected once a day.
+
+## daily row budget
+
+Workers Free allows 5M `rows_read` and 100k `rows_written` per UTC day across
+the account's SQLite-backed Durable Objects, and blocks **every** storage call
+once a limit is crossed (that took the whole relay down on 2026-10-13). The
+object counts the rows it spends (SQL cursors and KV calls alike), persists the
+count in chunks, and sheds load in stages, measured against whichever limit is
+closer:
+
+| used | stage | effect |
+| --- | --- | --- |
+| 50% | `explorer-paused` | `/api/graph/*` answers 429 (live patches of in-memory souls still work); housekeeping stops |
+| 80% | `writes-paused` | puts to stored souls are acked with `err`; live souls keep relaying |
+| 92% | `reads-paused` | gets of stored souls not in the node cache answer `err` |
+
+If storage is blocked anyway, the object keeps serving memory-only traffic and
+retries storage every minute. `/api/stats` reports `storage.budget`,
+`storage.health`, `storage.liveNodes` and `storage.sqlUsage.byCategory`
+(`gun`, `explorer`, `housekeeping`, `system` since the object woke); the
+dashboard shows both meters. Limits come from `ROWS_READ_DAILY_LIMIT` and
+`ROWS_WRITTEN_DAILY_LIMIT`.
 
 ## persistence
 

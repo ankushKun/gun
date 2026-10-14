@@ -163,6 +163,54 @@ function setStatusLatency(ms) {
     else if (ms > 200) el.classList.add('is-warn');
 }
 
+function updateRowMeter(prefix, used, limit, stages) {
+    const value = document.getElementById(`${prefix}Today`);
+    const percent = document.getElementById(`${prefix}Percent`);
+    const fill = document.getElementById(`${prefix}MeterFill`);
+    if (!value || !percent || !fill) return;
+    value.textContent = used != null ? used.toLocaleString('en-US') : '0';
+    if (!limit) {
+        percent.textContent = '';
+        fill.style.width = '0%';
+        return;
+    }
+    const fraction = used / limit;
+    const pct = Math.min(100, Math.round(fraction * 100));
+    percent.textContent = `${pct}% of ${limit.toLocaleString('en-US')}`;
+    fill.style.width = `${pct}%`;
+    fill.classList.toggle('is-warn', fraction >= (stages?.[0]?.at ?? 0.5) && fraction < (stages?.[1]?.at ?? 0.8));
+    fill.classList.toggle('is-danger', fraction >= (stages?.[1]?.at ?? 0.8));
+    const meter = fill.parentElement;
+    if (meter) meter.setAttribute('aria-valuenow', String(pct));
+}
+
+function updateBudget(storage) {
+    const budget = storage.budget;
+    if (!budget) return;
+    updateRowMeter('rowsRead', budget.rowsRead, budget.limits?.rowsRead, budget.stages);
+    updateRowMeter('rowsWritten', budget.rowsWritten, budget.limits?.rowsWritten, budget.stages);
+    const stage = document.getElementById('budgetStage');
+    const resets = document.getElementById('budgetResets');
+    const blocked = storage.health && storage.health.ready === false;
+    if (stage) {
+        stage.textContent = blocked ? 'storage blocked' : budget.stage;
+        stage.classList.toggle('is-paused', blocked || budget.stage !== 'ok');
+    }
+    if (resets) {
+        const at = budget.resetsAt ? new Date(budget.resetsAt) : null;
+        resets.textContent = at ? `resets ${at.toISOString().slice(11, 16)} UTC` : '';
+        resets.classList.toggle('is-paused', blocked || budget.stage !== 'ok');
+    }
+    const note = document.getElementById('budgetNote');
+    if (note && budget.stages) {
+        const pct = (i) => Math.round((budget.stages[i]?.at ?? 0) * 100);
+        note.textContent =
+            `Free tier allows ${budget.limits.rowsRead.toLocaleString('en-US')} rows read and ${budget.limits.rowsWritten.toLocaleString('en-US')} rows written per UTC day. ` +
+            `Live cursors and presence stay in memory and cost no rows. At ${pct(0)}% the explorer pauses, at ${pct(1)}% writes to stored data pause, at ${pct(2)}% uncached reads pause.` +
+            (blocked ? ` Storage is blocked right now (${storage.health.error || 'quota'}); live data keeps relaying.` : '');
+    }
+}
+
 function updateStorageMeter(used, limit) {
     const fill = document.getElementById('storageMeterFill');
     const percent = document.getElementById('storagePercent');
@@ -219,6 +267,9 @@ function updateStats(data, latencyMs) {
                 data.storage.backend || 'durable-object-sqlite';
             document.getElementById('graphNodes').textContent =
                 data.storage.graphNodes != null ? data.storage.graphNodes : '0';
+            const liveNodes = document.getElementById('liveNodes');
+            if (liveNodes) liveNodes.textContent = data.storage.liveNodes != null ? data.storage.liveNodes : '0';
+            updateBudget(data.storage);
             if (limit) {
                 document.getElementById('storageLimit').textContent = formatBytes(limit);
             }
