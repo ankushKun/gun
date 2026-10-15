@@ -25,6 +25,9 @@ export default defineConfig(({ mode }) => {
 				// sampled so request patterns show up without spending the free plan's
 				// daily log allowance on every WebSocket message
 				headSamplingRate: 0.1,
+				// logs and traces default to 1 unless set, which overrides the rate above
+				logs: { headSamplingRate: 0.1 },
+				traces: { headSamplingRate: 0.1 },
 			},
 			env: {
 				// Free plan: 5 GB total. Evict from 4 GiB, freeing 512 MiB per pass.
