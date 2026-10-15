@@ -41,70 +41,97 @@
             <canvas id="throughputGraph"></canvas>
         </section>
 
-        <table class="stats-table" aria-label="Peer statistics">
-            <tbody>
-                <tr>
-                    <td>uptime</td>
-                    <td id="uptimeDetail" class="mono">0d 0h 0m 0s</td>
-                </tr>
-                <tr>
-                    <td>connected clients</td>
-                    <td id="liveClients" class="mono">0</td>
-                </tr>
-                <tr>
-                    <td><a href="/explorer.html" class="storage-table-link">graph nodes</a></td>
-                    <td id="graphNodes" class="mono">0</td>
-                </tr>
-                <tr>
-                    <td>live nodes (memory)</td>
-                    <td id="liveNodes" class="mono">0</td>
-                </tr>
-                <tr>
-                    <td>rows read today</td>
-                    <td>
-                        <span id="rowsReadToday" class="mono">0</span>
-                        <span id="rowsReadPercent" class="storage-percent mono"></span>
-                        <div class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Rows read today">
-                            <div id="rowsReadMeterFill" class="storage-meter__fill"></div>
-                        </div>
-                    </td>
-                </tr>
-                <tr>
-                    <td>rows written today</td>
-                    <td>
-                        <span id="rowsWrittenToday" class="mono">0</span>
-                        <span id="rowsWrittenPercent" class="storage-percent mono"></span>
-                        <div class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Rows written today">
-                            <div id="rowsWrittenMeterFill" class="storage-meter__fill"></div>
-                        </div>
-                    </td>
-                </tr>
-                <tr>
-                    <td>budget stage</td>
-                    <td><span id="budgetStage" class="mono">ok</span><span id="budgetResets" class="budget-stage"></span></td>
-                </tr>
-                <tr>
-                    <td>storage used</td>
-                    <td>
-                        <span id="storageUsed" class="mono">0 B</span>
-                        <span id="storagePercent" class="storage-percent mono"></span>
-                        <div class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Storage usage">
-                            <div id="storageMeterFill" class="storage-meter__fill"></div>
-                        </div>
-                    </td>
-                </tr>
-                <tr>
-                    <td>storage limit</td>
-                    <td id="storageLimit" class="mono">5 GB</td>
-                </tr>
-                <tr>
-                    <td>backend</td>
-                    <td id="storageBackend" class="mono">—</td>
-                </tr>
-            </tbody>
-        </table>
-        <p class="section-note" id="storageEvictionNote"></p>
-        <p class="section-note" id="budgetNote"></p>
+        <section aria-labelledby="overviewHeading">
+            <h2 id="overviewHeading">overview</h2>
+            <dl class="stat-tiles">
+                <div class="stat-tile">
+                    <dt>uptime</dt>
+                    <dd id="uptimeDetail" class="mono">0d 0h 0m 0s</dd>
+                </div>
+                <div class="stat-tile">
+                    <dt>connected clients</dt>
+                    <dd id="liveClients" class="mono">0</dd>
+                </div>
+                <div class="stat-tile">
+                    <dt><a href="/explorer.html" class="stat-link">graph nodes ›</a></dt>
+                    <dd><span id="graphNodes" class="mono">0</span> <span class="stat-unit">stored</span></dd>
+                </div>
+                <div class="stat-tile">
+                    <dt>live nodes</dt>
+                    <dd><span id="liveNodes" class="mono">0</span> <span class="stat-unit">in memory</span></dd>
+                </div>
+            </dl>
+        </section>
+
+        <section aria-labelledby="budgetHeading">
+            <div class="section-head">
+                <h2 id="budgetHeading">daily row budget</h2>
+                <span class="section-meta">
+                    <span id="budgetStage" class="stage-pill">ok</span>
+                    <span id="budgetResets" class="stage-resets"></span>
+                </span>
+            </div>
+            <ul class="meter-list">
+                <li class="meter-row">
+                    <div class="meter-row__head">
+                        <span class="meter-row__label">rows read</span>
+                        <span class="meter-row__value mono"><span id="rowsReadToday">0</span><span id="rowsReadLimit" class="meter-row__limit"></span><span id="rowsReadPercent" class="meter-row__pct"></span></span>
+                    </div>
+                    <div id="rowsReadMeter" class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Rows read today">
+                        <div class="storage-meter__fill"></div>
+                    </div>
+                </li>
+                <li class="meter-row">
+                    <div class="meter-row__head">
+                        <span class="meter-row__label">rows written</span>
+                        <span class="meter-row__value mono"><span id="rowsWrittenToday">0</span><span id="rowsWrittenLimit" class="meter-row__limit"></span><span id="rowsWrittenPercent" class="meter-row__pct"></span></span>
+                    </div>
+                    <div id="rowsWrittenMeter" class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Rows written today">
+                        <div class="storage-meter__fill"></div>
+                    </div>
+                </li>
+            </ul>
+            <p class="section-note" id="budgetNote"></p>
+            <ol class="threshold-list" id="budgetStages" aria-label="What pauses as the budget fills">
+                <li><span class="threshold-at">50%</span><span>explorer and housekeeping pause</span></li>
+                <li><span class="threshold-at">80%</span><span>writes to stored data pause</span></li>
+                <li><span class="threshold-at">92%</span><span>uncached reads of stored data pause</span></li>
+            </ol>
+        </section>
+
+        <section aria-labelledby="storageHeading">
+            <h2 id="storageHeading">storage</h2>
+            <ul class="meter-list">
+                <li class="meter-row">
+                    <div class="meter-row__head">
+                        <span class="meter-row__label">used</span>
+                        <span class="meter-row__value mono"><span id="storageUsed">0 B</span><span id="storageLimitInline" class="meter-row__limit"></span><span id="storagePercent" class="meter-row__pct"></span></span>
+                    </div>
+                    <div id="storageMeter" class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Storage usage">
+                        <div class="storage-meter__fill"></div>
+                    </div>
+                </li>
+            </ul>
+            <dl class="kv-list">
+                <div>
+                    <dt>limit</dt>
+                    <dd id="storageLimit" class="mono">5 GB</dd>
+                </div>
+                <div>
+                    <dt>cleanup starts at</dt>
+                    <dd id="storageEvictAt" class="mono">-</dd>
+                </div>
+                <div>
+                    <dt>cleanup frees</dt>
+                    <dd id="storageEvictBytes" class="mono">-</dd>
+                </div>
+                <div>
+                    <dt>backend</dt>
+                    <dd id="storageBackend" class="mono">-</dd>
+                </div>
+            </dl>
+            <p class="section-note" id="storageEvictionNote">When usage reaches the cleanup point, the oldest graph data is cleared automatically to make room for new data. The tick on the meter marks where that happens.</p>
+        </section>
 
         <hr class="stats-divider">
 
@@ -119,7 +146,7 @@
         <div id="peersPanel" class="peers-panel" hidden>
             <section>
                 <h2>mesh peers</h2>
-                <p class="section-note">Add a peer — the worker connects automatically and syncs new graph writes both ways (no manual reconnect).</p>
+                <p id="peerNote" class="section-note">Add a peer — the worker connects automatically and syncs new graph writes both ways (no manual reconnect).</p>
                 <form class="peer-form" id="peerForm">
                     <div class="peer-add-row">
                         <input type="url" id="peerUrlInput" placeholder="https://relay.example.com/gun" spellcheck="false" autocomplete="off" required>

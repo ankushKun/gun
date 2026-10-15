@@ -163,25 +163,82 @@ function setStatusLatency(ms) {
     else if (ms > 200) el.classList.add('is-warn');
 }
 
-function updateRowMeter(prefix, used, limit, stages) {
-    const value = document.getElementById(`${prefix}Today`);
-    const percent = document.getElementById(`${prefix}Percent`);
-    const fill = document.getElementById(`${prefix}MeterFill`);
-    if (!value || !percent || !fill) return;
-    value.textContent = used != null ? used.toLocaleString('en-US') : '0';
-    if (!limit) {
-        percent.textContent = '';
-        fill.style.width = '0%';
-        return;
+const STAGE_LABELS = {
+    'explorer-paused': 'explorer and housekeeping pause',
+    'writes-paused': 'writes to stored data pause',
+    'reads-paused': 'uncached reads of stored data pause',
+};
+
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+function formatPercent(fraction) {
+    if (!(fraction > 0)) return '0%';
+    if (fraction < 0.01) return '<1%';
+    return `${Math.min(100, Math.round(fraction * 100))}%`;
+}
+
+// Tick marks on a meter, e.g. the budget stages or the storage cleanup point.
+function setMeterTicks(meter, fractions) {
+    const key = fractions.join(',');
+    if (meter.dataset.ticks === key) return;
+    meter.dataset.ticks = key;
+    meter.querySelectorAll('.meter-tick').forEach((t) => t.remove());
+    for (const f of fractions) {
+        const tick = document.createElement('i');
+        tick.className = 'meter-tick';
+        tick.style.left = `${f * 100}%`;
+        meter.appendChild(tick);
     }
-    const fraction = used / limit;
-    const pct = Math.min(100, Math.round(fraction * 100));
-    percent.textContent = `${pct}% of ${limit.toLocaleString('en-US')}`;
-    fill.style.width = `${pct}%`;
-    fill.classList.toggle('is-warn', fraction >= (stages?.[0]?.at ?? 0.5) && fraction < (stages?.[1]?.at ?? 0.8));
-    fill.classList.toggle('is-danger', fraction >= (stages?.[1]?.at ?? 0.8));
-    const meter = fill.parentElement;
-    if (meter) meter.setAttribute('aria-valuenow', String(pct));
+}
+
+function setMeter(id, fraction, { ticks = [], warnAt = Infinity, dangerAt = Infinity } = {}) {
+    const meter = document.getElementById(id);
+    const fill = meter?.querySelector('.storage-meter__fill');
+    if (!fill) return;
+    const pct = Math.max(0, Math.min(100, fraction * 100));
+    // a sliver for any non-zero usage, so "in use" never reads as empty
+    fill.style.width = `${fraction > 0 ? Math.max(pct, 0.5) : 0}%`;
+    fill.classList.toggle('is-warn', fraction >= warnAt && fraction < dangerAt);
+    fill.classList.toggle('is-danger', fraction >= dangerAt);
+    meter.setAttribute('aria-valuenow', String(Math.round(pct)));
+    setMeterTicks(meter, ticks);
+}
+
+function updateRowMeter(prefix, used, limit, stages) {
+    setText(`${prefix}Today`, used != null ? used.toLocaleString('en-US') : '0');
+    setText(`${prefix}Limit`, limit ? ` / ${limit.toLocaleString('en-US')}` : '');
+    setText(`${prefix}Percent`, limit ? formatPercent(used / limit) : '');
+    setMeter(`${prefix}Meter`, limit ? used / limit : 0, {
+        ticks: (stages || []).map((s) => s.at),
+        warnAt: stages?.[0]?.at ?? 0.5,
+        dangerAt: stages?.[1]?.at ?? 0.8,
+    });
+}
+
+function renderBudgetStages(stages, fraction) {
+    const list = document.getElementById('budgetStages');
+    if (!list || !stages?.length) return;
+    const key = JSON.stringify(stages);
+    if (list.dataset.key !== key) {
+        list.dataset.key = key;
+        list.replaceChildren(...stages.map((s) => {
+            const li = document.createElement('li');
+            li.dataset.at = String(s.at);
+            const at = document.createElement('span');
+            at.className = 'threshold-at';
+            at.textContent = `${Math.round(s.at * 100)}%`;
+            const label = document.createElement('span');
+            label.textContent = STAGE_LABELS[s.name] || s.name.replace(/-/g, ' ');
+            li.append(at, label);
+            return li;
+        }));
+    }
+    list.querySelectorAll('li').forEach((li) => {
+        li.classList.toggle('is-reached', fraction >= Number(li.dataset.at));
+    });
 }
 
 function updateBudget(storage) {
@@ -189,42 +246,40 @@ function updateBudget(storage) {
     if (!budget) return;
     updateRowMeter('rowsRead', budget.rowsRead, budget.limits?.rowsRead, budget.stages);
     updateRowMeter('rowsWritten', budget.rowsWritten, budget.limits?.rowsWritten, budget.stages);
-    const stage = document.getElementById('budgetStage');
-    const resets = document.getElementById('budgetResets');
+    renderBudgetStages(budget.stages, budget.fraction ?? 0);
     const blocked = storage.health && storage.health.ready === false;
+    const paused = blocked || budget.stage !== 'ok';
+    const stage = document.getElementById('budgetStage');
     if (stage) {
-        stage.textContent = blocked ? 'storage blocked' : budget.stage;
-        stage.classList.toggle('is-paused', blocked || budget.stage !== 'ok');
+        stage.textContent = blocked ? 'storage blocked' : budget.stage.replace(/-/g, ' ');
+        stage.classList.toggle('is-paused', paused);
     }
-    if (resets) {
-        const at = budget.resetsAt ? new Date(budget.resetsAt) : null;
-        resets.textContent = at ? `resets ${at.toISOString().slice(11, 16)} UTC` : '';
-        resets.classList.toggle('is-paused', blocked || budget.stage !== 'ok');
-    }
+    const at = budget.resetsAt ? new Date(budget.resetsAt) : null;
+    setText('budgetResets', at ? `resets ${at.toISOString().slice(11, 16)} UTC` : '');
     const note = document.getElementById('budgetNote');
-    if (note && budget.stages) {
-        const pct = (i) => Math.round((budget.stages[i]?.at ?? 0) * 100);
+    if (note && budget.limits) {
         note.textContent =
             `Free tier allows ${budget.limits.rowsRead.toLocaleString('en-US')} rows read and ${budget.limits.rowsWritten.toLocaleString('en-US')} rows written per UTC day. ` +
-            `Live cursors and presence stay in memory and cost no rows. At ${pct(0)}% the explorer pauses, at ${pct(1)}% writes to stored data pause, at ${pct(2)}% uncached reads pause.` +
-            (blocked ? ` Storage is blocked right now (${storage.health.error || 'quota'}); live data keeps relaying.` : '');
+            'Live cursors and presence stay in memory and cost no rows. ' +
+            (blocked ? `Storage is blocked right now (${storage.health.error || 'quota'}); live data keeps relaying. ` : '') +
+            'Whichever counter is further along decides what pauses:';
     }
 }
 
-function updateStorageMeter(used, limit) {
-    const fill = document.getElementById('storageMeterFill');
-    const percent = document.getElementById('storagePercent');
-    const meter = document.querySelector('.storage-meter');
-    if (!fill || !percent || used == null || !limit) {
-        if (fill) fill.style.width = '0%';
-        if (percent) percent.textContent = '';
-        if (meter) meter.setAttribute('aria-valuenow', '0');
-        return;
-    }
-    const pct = Math.min(100, Math.round((used / limit) * 100));
-    fill.style.width = `${pct}%`;
-    percent.textContent = `${pct}% of limit`;
-    meter.setAttribute('aria-valuenow', String(pct));
+function updateStorage(storage) {
+    const used = storage.bytesUsed;
+    const limit = storage.limitBytes;
+    const evictAt = storage.evictAtBytes;
+    setText('storageUsed', used != null ? formatBytes(used) : 'unknown');
+    setText('storageLimitInline', limit ? ` / ${formatBytes(limit)}` : '');
+    setText('storagePercent', used != null && limit ? formatPercent(used / limit) : '');
+    if (limit) setText('storageLimit', formatBytes(limit));
+    setText('storageEvictAt', evictAt ? formatBytes(evictAt) : '-');
+    setText('storageEvictBytes', storage.evictBytes ? `~${formatBytes(storage.evictBytes)} oldest` : '-');
+    setText('storageBackend', storage.backend || 'durable-object-sqlite');
+    setMeter('storageMeter', used != null && limit ? used / limit : 0, {
+        ticks: evictAt && limit ? [evictAt / limit] : [],
+    });
 }
 
 // Update stats display
@@ -259,28 +314,10 @@ function updateStats(data, latencyMs) {
         }
 
         if (data.storage) {
-            const used = data.storage.bytesUsed;
-            const limit = data.storage.limitBytes;
-            document.getElementById('storageUsed').textContent =
-                used != null ? formatBytes(used) : 'unknown';
-            document.getElementById('storageBackend').textContent =
-                data.storage.backend || 'durable-object-sqlite';
-            document.getElementById('graphNodes').textContent =
-                data.storage.graphNodes != null ? data.storage.graphNodes : '0';
-            const liveNodes = document.getElementById('liveNodes');
-            if (liveNodes) liveNodes.textContent = data.storage.liveNodes != null ? data.storage.liveNodes : '0';
+            setText('graphNodes', data.storage.graphNodes != null ? data.storage.graphNodes.toLocaleString('en-US') : '0');
+            setText('liveNodes', data.storage.liveNodes != null ? data.storage.liveNodes.toLocaleString('en-US') : '0');
             updateBudget(data.storage);
-            if (limit) {
-                document.getElementById('storageLimit').textContent = formatBytes(limit);
-            }
-            updateStorageMeter(used, limit);
-            const note = document.getElementById('storageEvictionNote');
-            const evictAt = data.storage.evictAtBytes;
-            const evictBytes = data.storage.evictBytes;
-            if (note && evictAt && evictBytes) {
-                note.textContent =
-                    `When usage nears ${formatBytes(evictAt)}, about ${formatBytes(evictBytes)} of the oldest graph data is cleared automatically to make room for new data.`;
-            }
+            updateStorage(data.storage);
         }
 
         if (data.throughput?.samples) {
