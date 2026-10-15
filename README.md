@@ -52,7 +52,7 @@ Durable Object classes are declared in `exports` (this replaces Wrangler
 - `/` - dashboard
 - `/gun` - Gun-compatible WebSocket peer endpoint
 - `/api/stats` - dashboard stats
-- `/api/peers` - mesh peer list (GET public, POST/DELETE need `PEERS_EDIT_TOKEN` when set)
+- `/api/peers` - mesh peer list (GET public, POST/DELETE need `PEERS_EDIT_TOKEN`, and are disabled entirely when it is not set)
 - `/api/peers/verify` - probe a gun peer url (POST, no auth)
 - `/api/peers/reconnect` - force server-side mesh reconnect (POST, same auth as peer edits)
 - `/api/graph/souls` - node index (`limit`, `cursor` = last soul of previous page, `prefix`, `q`, `sort=updated`)

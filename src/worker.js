@@ -528,13 +528,17 @@ async function probeGunPeer(url) {
   }
 }
 
-function requireEditAuth(request, env) {
+// Fails closed: with no PEERS_EDIT_TOKEN configured, edits are disabled outright.
+function editAuthError(request, env) {
   const token = env.PEERS_EDIT_TOKEN;
   if (!token) {
-    return true;
+    return json({ error: "peer editing disabled" }, { status: 403 });
   }
   const auth = request.headers.get("authorization") || "";
-  return auth === `Bearer ${token}` || auth === token;
+  if (auth === `Bearer ${token}` || auth === token) {
+    return null;
+  }
+  return json({ error: "unauthorized" }, { status: 401 });
 }
 
 function e2eAuthorized(request, env) {
@@ -1046,8 +1050,9 @@ export class GunPeerObject {
     }
 
     if (url.pathname === "/api/peers/reconnect" && request.method === "POST") {
-      if (!requireEditAuth(request, this.env)) {
-        return json({ error: "unauthorized" }, { status: 401 });
+      const authError = editAuthError(request, this.env);
+      if (authError) {
+        return authError;
       }
       await this.syncRemoteMesh(true);
       return json({ ok: true, peers: this.peerListWithMeshStatus() });
@@ -1058,22 +1063,25 @@ export class GunPeerObject {
     }
 
     if (url.pathname === "/api/peers" && request.method === "POST") {
-      if (!requireEditAuth(request, this.env)) {
-        return json({ error: "unauthorized" }, { status: 401 });
+      const authError = editAuthError(request, this.env);
+      if (authError) {
+        return authError;
       }
       return json(await this.addPeerRequest(request));
     }
 
     if (url.pathname === "/api/peers" && request.method === "DELETE") {
-      if (!requireEditAuth(request, this.env)) {
-        return json({ error: "unauthorized" }, { status: 401 });
+      const authError = editAuthError(request, this.env);
+      if (authError) {
+        return authError;
       }
       return json(await this.removePeerRequest(url));
     }
 
     if (url.pathname === "/api/storage" && request.method === "DELETE") {
-      if (!requireEditAuth(request, this.env)) {
-        return json({ error: "unauthorized" }, { status: 401 });
+      const authError = editAuthError(request, this.env);
+      if (authError) {
+        return authError;
       }
       return json(await this.e2eReset());
     }

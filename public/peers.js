@@ -2,6 +2,7 @@ const PEER_TOKEN_KEY = 'gun-peer-edit-token';
 
 let meshPeers = [];
 let meshPeersKey = '';
+let peerEditable = true;
 
 function peerAuthHeaders() {
     const token = sessionStorage.getItem(PEER_TOKEN_KEY);
@@ -28,7 +29,7 @@ function renderPeerList() {
     const list = document.getElementById('peerList');
     if (!list) return;
 
-    const key = JSON.stringify(meshPeers.map((p) => [p.id, p.url, p.meshStatus]));
+    const key = JSON.stringify([peerEditable, meshPeers.map((p) => [p.id, p.url, p.meshStatus])]);
     if (key === meshPeersKey) return;
     meshPeersKey = key;
 
@@ -46,7 +47,7 @@ function renderPeerList() {
         li.innerHTML =
             `<span class="peer-url">${escapeHtml(peer.url)}</span>` +
             `<span class="peer-meta">${meshStatusLabel(status)}</span>` +
-            `<button type="button" class="peer-remove" data-id="${peer.id}">remove</button>`;
+            (peerEditable ? `<button type="button" class="peer-remove" data-id="${peer.id}">remove</button>` : '');
         li.classList.toggle('peer-connected', status === 'connected');
         list.appendChild(li);
     }
@@ -59,6 +60,9 @@ function renderPeerList() {
 window.renderMeshStatus = function renderMeshStatus(mesh) {
     if (!mesh) return;
     meshPeers = mesh.peers || meshPeers;
+    if (typeof mesh.editProtected === 'boolean') {
+        setPeerEditable(mesh.editProtected);
+    }
     renderPeerList();
     const connected = mesh.connected ?? meshPeers.filter((p) => p.meshStatus === 'connected').length;
     const total = meshPeers.length;
@@ -68,6 +72,20 @@ window.renderMeshStatus = function renderMeshStatus(mesh) {
     }
     setMeshStatus(`${connected}/${total} connected`, connected > 0);
 };
+
+// With no edit token configured on the worker, peer editing is off for everyone.
+function setPeerEditable(editable) {
+    if (editable === peerEditable) return;
+    peerEditable = editable;
+    const form = document.getElementById('peerForm');
+    if (form) form.hidden = !editable;
+    const note = document.getElementById('peerNote');
+    if (note) {
+        note.textContent = editable
+            ? 'Add a peer — the worker connects automatically and syncs new graph writes both ways (no manual reconnect).'
+            : 'Peer editing is disabled on this relay.';
+    }
+}
 
 function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
