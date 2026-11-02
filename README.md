@@ -60,7 +60,7 @@ Durable Object classes are declared in `exports` (this replaces Wrangler
 - `/api/graph/subgraph` - nodes + reference edges for the explorer (`roots`, `prefix`, `depth`, `maxNodes`, `list` to include the recent soul list in the same call)
 - `/explorer.html` - graph explorer UI
 - `/health` - health check
-- `/api/e2e/*` - test hooks, only with `E2E_RESET_TOKEN` (reset, nodes, seed, system, legacy, migrate, budget, housekeep, rows)
+- `/api/e2e/*` - test hooks, only with `E2E_RESET_TOKEN` (reset, nodes, seed, system, legacy, migrate, budget, housekeep, rows, flush)
 
 ## live souls (memory only)
 
@@ -69,9 +69,12 @@ presence data: cursors, heartbeats, reactions, "listening now". Clients discard
 them within seconds, so the peer keeps them in memory only and never spends a
 SQLite row on them. They are merged with Gun's HAM state, relayed to every other
 socket, and served to gets like any other node. When the object wakes with an
-empty memory, a child put puts its key back into its parent (`…/cursors/home`),
-so new visitors still learn who else is around. Entries expire after 10 minutes
-without an update. The explorer lists them with a `live` tag.
+empty memory, a child put puts its key back into its parent (`…/cursors/site`),
+so new visitors still learn who else is around. Entries expire after 2 minutes
+without an update; an expired child also leaves its parent's key list, and a
+get of a live parent never lists a child that is not in memory, so a new
+visitor only fetches the people who are actually here. The explorer lists them
+with a `live` tag.
 
 Rows those souls left in SQL before this change are swept 500 at a time, every
 10 minutes, by the housekeeping alarm. Tombstones (nodes whose fields are all
@@ -92,19 +95,53 @@ closer:
 | 80% | `writes-paused` | puts to stored souls are acked with `err`; live souls keep relaying |
 | 92% | `reads-paused` | gets of stored souls not in the node cache answer `err` |
 
+Durable Object requests are capped too (100k per UTC day on Free). The docs
+only state the 20:1 ratio for incoming WebSocket messages on Paid, so the object
+counts every inbound frame as one request (`FRAME_RATIO`, default 1) plus one per
+socket upgrade or HTTP call, against `REQUESTS_DAILY_LIMIT` (default 100000).
+At 70% it sends `{dam: "load", stage: "live-slow"}` to every socket, and again
+to each new socket as it connects; it sends `stage: "ok"` when the day rolls
+over. ankush.one stops its cursor stream and stretches presence beats to 60 s
+while it is slow. Once the Cloudflare dashboard shows how Free actually counts
+socket messages, set `FRAME_RATIO` to match. The dashboard polls every 15 s and
+shows the requests meter next to the row meters.
+
 If storage is blocked anyway, the object keeps serving memory-only traffic and
 retries storage every minute. `/api/stats` reports `storage.budget`,
-`storage.health`, `storage.liveNodes` and `storage.sqlUsage.byCategory`
+`storage.budget.requests`, `storage.health`, `storage.liveNodes` and `storage.sqlUsage.byCategory`
 (`gun`, `explorer`, `housekeeping`, `system` since the object woke); the
 dashboard shows both meters. Limits come from `ROWS_READ_DAILY_LIMIT` and
 `ROWS_WRITTEN_DAILY_LIMIT`.
+
+## repeated links
+
+Gun's chained put (`gun.get("a").get("b").get("c").put(x)`) re-sends every link
+on the path with a fresh state. Merged as a change, that rewrote the stored root
+on every cursor move (2 rows per live put, 14 per chat message, measured). The
+peer drops any incoming field that repeats the link it already holds: no state
+bump, no write, no relay. Links only; primitives and nulls keep plain HAM.
+Clients should still address souls directly (`gun.get("a/b/c")`), which also
+saves the gets that resolve each step of the path.
+
+## write-behind
+
+Puts to stored souls are merged in memory, relayed and acked at once, and
+written to SQLite 1 s after the last change to any soul, at most 5 s after the
+first unwritten one. A burst on one soul (a sticky note drag, typing, a run of
+paint strokes) costs one row write per flush instead of one per put. The pending
+timer keeps the object from hibernating, so the buffer cannot be dropped that
+way; a deploy landing inside the window can lose those seconds. A put whose
+writer passed a callback (`ok` on the wire) is written before its ack. Gets, the
+node inspector and the explorer listings read the buffer first;
+`/api/stats` shows `storage.pendingWrites`.
 
 ## persistence
 
 The old Node server used Gun Radisk with `file: "data"`. Cloudflare Workers do
 not provide a persistent local filesystem for that model, so this version stores
-Gun graph nodes in a SQLite `nodes` table inside the Durable Object instead. Each
-write is acknowledged after the graph merge is stored, and reads are served from
+Gun graph nodes in a SQLite `nodes` table inside the Durable Object instead. Writes
+are acknowledged once merged in memory and stored within seconds (see
+write-behind), and reads are served from
 the Durable Object (hot nodes from an in-memory cache).
 
 Listings use a partial index on live nodes, so explorer queries read rows in

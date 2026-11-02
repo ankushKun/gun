@@ -24,6 +24,8 @@ function gunPutMessage(soul, payloadSize, timestamp) {
   const payload = "x".repeat(payloadSize);
   return {
     "#": `put-${soul}-${timestamp}`,
+    // Like a Gun put with a callback: the relay writes it before acking.
+    ok: { "@": 1, "/": 1 },
     put: {
       [soul]: {
         _: { "#": soul, ">": { payload: timestamp } },
@@ -172,6 +174,7 @@ export async function putGraphNodeCustom(soul, fields, timestamp) {
   }
   const message = JSON.stringify({
     "#": `put-${soul}-${timestamp}`,
+    ok: { "@": 1, "/": 1 },
     put: {
       [soul]: {
         _: { "#": soul, ">": state },

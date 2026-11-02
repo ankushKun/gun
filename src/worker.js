@@ -8,7 +8,7 @@ const JSON_HEADERS = {
 };
 
 const THROUGHPUT_MAX_POINTS = 60;
-// ponytail: sample on /api/stats (~5s dashboard poll), not a 1Hz DO alarm (~86k req/day).
+// ponytail: sample on /api/stats (15s dashboard poll; any gap of 4.5s or more makes a point), not a 1Hz DO alarm (~86k req/day).
 const THROUGHPUT_SAMPLE_MS = 5000;
 const THROUGHPUT_WINDOW_MS = THROUGHPUT_MAX_POINTS * THROUGHPUT_SAMPLE_MS;
 const THROUGHPUT_GAP_MS = 120_000;
@@ -45,7 +45,8 @@ const NODE_MIGRATION_INTERVAL_MS = 10 * 60 * 1000;
 // reactions) that clients discard within seconds. They live in memory only, so a
 // mouse move never costs a SQLite row. Override with EPHEMERAL_PREFIXES (comma list).
 const DEFAULT_EPHEMERAL_PREFIXES = ["ankush-one/live"];
-const EPHEMERAL_TTL_MS = 10 * 60 * 1000;
+// Every live writer beats well inside this (presence 20s, IRC 5s, music 8s).
+const EPHEMERAL_TTL_MS = 2 * 60 * 1000;
 const EPHEMERAL_MAX_ENTRIES = 5000;
 const EPHEMERAL_MAX_BYTES = 24 * 1024 * 1024;
 
@@ -59,10 +60,20 @@ const BUDGET_STAGES = [
   { name: "writes-paused", at: 0.8 }, // puts to stored souls are refused
   { name: "reads-paused", at: 0.92 }, // uncached gets of stored souls are refused
 ];
+// Free plan Durable Object requests per UTC day. The docs only state the 20:1 ratio
+// for incoming WebSocket messages on Paid, so count every frame (ratio 1) until the
+// Cloudflare dashboard shows otherwise. Past LOAD_SHED_AT the relay tells clients
+// (a {dam: "load"} message) to stop sending cursors and stretch their beats.
+const REQUESTS_DAILY_LIMIT = 100_000;
+const FRAME_RATIO = 1;
+const LOAD_SHED_AT = 0.7;
+const LOAD_STAGE = "live-slow";
 const BUDGET_KEY = "rowBudget";
 const BUDGET_PERSIST_EVERY_ROWS = 500;
 const BUDGET_PERSIST_MIN_ROWS = 50;
 const BUDGET_PERSIST_EVERY_MS = 60_000;
+const BUDGET_PERSIST_EVERY_FRAMES = 2000;
+const BUDGET_PERSIST_MIN_FRAMES = 200;
 
 // Housekeeping: delete the rows that live souls left in SQL before they went
 // ephemeral, and collect tombstones nobody can resurrect any more.
@@ -73,6 +84,14 @@ const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const TOMBSTONE_GC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const TOMBSTONE_GC_BATCH = 500;
 const STORAGE_RETRY_MS = 60_000;
+
+// Write-behind for stored souls: a burst of puts to one soul (a sticky note drag,
+// typing, a run of paint strokes) costs one row write per flush instead of one per
+// put. Relays and acks go out at once; the pending timer keeps the object awake
+// (it cannot hibernate with a timer set), so the buffer is not lost to hibernation.
+// Puts whose writer waits on an ack (`ok` on the wire) are written before the ack.
+const WRITE_BEHIND_IDLE_MS = 1000;
+const WRITE_BEHIND_MAX_MS = 5000;
 
 const NODE_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS nodes (
@@ -250,10 +269,33 @@ class EphemeralStore {
       return undefined;
     }
     if (now - entry.touched > this.ttlMs) {
-      this.delete(soul);
+      this.expire(soul);
       return undefined;
     }
     return entry;
+  }
+
+  /**
+   * The node as a reader should see it: links to live children that have expired
+   * (or were never seen since the object woke) are left out, so a new visitor only
+   * fetches the people who are actually here. Returns the entry itself when nothing
+   * was dropped.
+   */
+  view(soul, now = Date.now()) {
+    const entry = this.get(soul, now);
+    if (!entry) {
+      return undefined;
+    }
+    let node = null;
+    for (const [field, value] of Object.entries(entry.node)) {
+      if (field === "_" || !isGunLink(value) || !this.matches(value["#"]) || this.get(value["#"], now)) {
+        continue;
+      }
+      node ||= { ...entry.node, _: { ...entry.node._, ">": { ...entry.node._?.[">"] } } };
+      delete node[field];
+      delete node._[">"][field];
+    }
+    return node ? { ...entry, node, json: JSON.stringify(node) } : entry;
   }
 
   set(soul, node, json, now = Date.now()) {
@@ -284,17 +326,40 @@ class EphemeralStore {
     }
   }
 
+  /** Drop an expired node and its key in the parent room, quietly (no relay). */
+  expire(soul) {
+    this.delete(soul);
+    const cut = soul.lastIndexOf("/");
+    if (cut <= 0) {
+      return;
+    }
+    const parentSoul = soul.slice(0, cut);
+    const key = soul.slice(cut + 1);
+    const parent = this.entries.get(parentSoul);
+    if (!parent || !isGunLink(parent.node[key]) || parent.node[key]["#"] !== soul) {
+      return;
+    }
+    delete parent.node[key];
+    if (parent.node._?.[">"]) {
+      delete parent.node._[">"][key];
+    }
+    const json = JSON.stringify(parent.node);
+    this.bytes += json.length - parent.size;
+    parent.json = json;
+    parent.size = json.length;
+  }
+
   sweep(now = Date.now()) {
     for (const [soul, entry] of this.entries) {
       if (now - entry.touched > this.ttlMs) {
-        this.delete(soul);
+        this.expire(soul);
       } else {
         break;
       }
     }
     while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) {
       const [oldest] = this.entries.keys();
-      this.delete(oldest);
+      this.expire(oldest);
     }
   }
 
@@ -558,12 +623,21 @@ export class GunPeerObject {
     this.nodeCache = new NodeCache();
     this.ephemeral = new EphemeralStore(parseEphemeralPrefixes(env?.EPHEMERAL_PREFIXES));
     this.seenMessages = new Map();
+    // Stored souls merged in memory and not yet written (see WRITE_BEHIND_*).
+    this.dirty = new Map();
+    this.dirtySince = 0;
+    this.flushTimer = null;
+    this.flushing = null;
+    // What clients were last told about the daily request budget.
+    this.loadStage = "ok";
     this.sqlUsage = { rowsRead: 0, rowsWritten: 0, since: this.startTime, byCategory: {} };
     this.usageCategory = "gun";
     // Rows counted today (UTC). Loaded from storage on init, persisted in chunks.
-    this.budget = { day: utcDay(), rowsRead: 0, rowsWritten: 0 };
+    // `frames` are inbound WebSocket messages, `requests` everything else that reached
+    // the object (socket upgrades, HTTP); both feed the daily request budget.
+    this.budget = { day: utcDay(), rowsRead: 0, rowsWritten: 0, frames: 0, requests: 0 };
     this.budgetLoaded = false;
-    this.budgetDirty = { rows: 0, since: this.startTime };
+    this.budgetDirty = { rows: 0, frames: 0, since: this.startTime };
     this.budgetPersisting = false;
     // Storage can be blocked by Cloudflare once a daily limit is crossed. Memory-only
     // traffic keeps flowing while this says so; stored souls fail soft.
@@ -631,8 +705,57 @@ export class GunPeerObject {
   rollBudgetDay(now = Date.now()) {
     const day = utcDay(now);
     if (day !== this.budget.day) {
-      this.budget = { day, rowsRead: 0, rowsWritten: 0 };
-      this.budgetDirty = { rows: 1, since: now };
+      this.budget = { day, rowsRead: 0, rowsWritten: 0, frames: 0, requests: 0 };
+      this.budgetDirty = { rows: 1, frames: 0, since: now };
+    }
+  }
+
+  requestLimits() {
+    return {
+      limit: Number(this.env?.REQUESTS_DAILY_LIMIT) || REQUESTS_DAILY_LIMIT,
+      ratio: Number(this.env?.FRAME_RATIO) || FRAME_RATIO,
+    };
+  }
+
+  /** Where today's Durable Object requests stand, with frames billed at the configured ratio. */
+  requestState() {
+    this.rollBudgetDay();
+    const { limit, ratio } = this.requestLimits();
+    const billed = (this.budget.requests || 0) + (this.budget.frames || 0) / ratio;
+    const fraction = limit > 0 ? billed / limit : 0;
+    return { billed: Math.round(billed), limit, ratio, fraction, stage: fraction >= LOAD_SHED_AT ? LOAD_STAGE : "ok" };
+  }
+
+  /** Count what reached the object; tell every client when the load stage changes. */
+  countRequests({ frames = 0, requests = 0 } = {}) {
+    this.rollBudgetDay();
+    this.budget.frames = (this.budget.frames || 0) + frames;
+    this.budget.requests = (this.budget.requests || 0) + requests;
+    this.budgetDirty.frames += frames + requests;
+    this.maybePersistBudget();
+    const { stage } = this.requestState();
+    if (stage !== this.loadStage) {
+      this.loadStage = stage;
+      this.broadcast(this.loadMessage());
+    }
+  }
+
+  loadMessage() {
+    const { stage, fraction } = this.requestState();
+    return { "#": crypto.randomUUID(), dam: "load", stage, fraction: Math.round(fraction * 1000) / 1000 };
+  }
+
+  maybePersistBudget() {
+    const { rows, frames, since } = this.budgetDirty;
+    const elapsed = Date.now() - since;
+    if (
+      this.budgetLoaded &&
+      this.storageHealth.ready &&
+      (rows >= BUDGET_PERSIST_EVERY_ROWS ||
+        frames >= BUDGET_PERSIST_EVERY_FRAMES ||
+        ((rows >= BUDGET_PERSIST_MIN_ROWS || frames >= BUDGET_PERSIST_MIN_FRAMES) && elapsed >= BUDGET_PERSIST_EVERY_MS))
+    ) {
+      this.persistBudget().catch(() => {});
     }
   }
 
@@ -667,27 +790,19 @@ export class GunPeerObject {
     this.budget.rowsRead += rowsRead;
     this.budget.rowsWritten += rowsWritten;
     this.budgetDirty.rows += rowsRead + rowsWritten;
-    const elapsed = Date.now() - this.budgetDirty.since;
-    if (
-      this.budgetLoaded &&
-      this.storageHealth.ready &&
-      (this.budgetDirty.rows >= BUDGET_PERSIST_EVERY_ROWS ||
-        (this.budgetDirty.rows >= BUDGET_PERSIST_MIN_ROWS && elapsed >= BUDGET_PERSIST_EVERY_MS))
-    ) {
-      this.persistBudget().catch(() => {});
-    }
+    this.maybePersistBudget();
   }
 
   async persistBudget(force = false) {
     if (this.budgetPersisting || !this.budgetLoaded) {
       return;
     }
-    if (!force && !this.budgetDirty.rows) {
+    if (!force && !this.budgetDirty.rows && !this.budgetDirty.frames) {
       return;
     }
     this.budgetPersisting = true;
     try {
-      this.budgetDirty = { rows: 0, since: Date.now() };
+      this.budgetDirty = { rows: 0, frames: 0, since: Date.now() };
       await this.kvPut(BUDGET_KEY, { ...this.budget });
       // The put itself is one row; leaving it unpersisted avoids a persist loop.
       this.budgetDirty.rows = 0;
@@ -708,6 +823,8 @@ export class GunPeerObject {
       // Rows counted during this wake (before the load) stay on top of the stored total.
       this.budget.rowsRead += stored.rowsRead || 0;
       this.budget.rowsWritten += stored.rowsWritten || 0;
+      this.budget.frames = (this.budget.frames || 0) + (stored.frames || 0);
+      this.budget.requests = (this.budget.requests || 0) + (stored.requests || 0);
     }
     this.budgetLoaded = true;
   }
@@ -1030,6 +1147,8 @@ export class GunPeerObject {
 
   async fetch(request) {
     await this.ready();
+    // Socket upgrades and HTTP calls are one Durable Object request each.
+    this.countRequests({ requests: 1 });
 
     const url = new URL(request.url);
     if (request.method === "OPTIONS") {
@@ -1114,6 +1233,9 @@ export class GunPeerObject {
       if (url.pathname === "/api/e2e/housekeep" && request.method === "POST") {
         return json(await this.runHousekeeping({ force: true }));
       }
+      if (url.pathname === "/api/e2e/flush" && request.method === "POST") {
+        return json(await this.flushDirty());
+      }
       if (url.pathname === "/api/e2e/rows" && request.method === "POST") {
         return json(await this.e2eSeedRows(request));
       }
@@ -1176,6 +1298,21 @@ export class GunPeerObject {
       fraction: Math.round(state.fraction * 1000) / 1000,
       stages: BUDGET_STAGES,
       resetsAt: nextUtcMidnight(),
+      requests: this.requestPayload(),
+    };
+  }
+
+  requestPayload() {
+    const state = this.requestState();
+    return {
+      frames: this.budget.frames || 0,
+      requests: this.budget.requests || 0,
+      billed: state.billed,
+      limit: state.limit,
+      frameRatio: state.ratio,
+      fraction: Math.round(state.fraction * 1000) / 1000,
+      stage: state.stage,
+      shedAt: LOAD_SHED_AT,
     };
   }
 
@@ -1186,6 +1323,11 @@ export class GunPeerObject {
     // Hibernation API: DO can sleep while clients stay connected (cuts free-tier duration).
     this.state.acceptWebSocket(server);
     server.serializeAttachment({ id: crypto.randomUUID() });
+    // Browsers configured with this relay never send a dam hi; connecting is their
+    // hi, so a slow day is announced as soon as the socket is accepted.
+    if (this.loadStage !== "ok") {
+      safeSend(server, this.loadMessage());
+    }
 
     return new Response(null, {
       status: 101,
@@ -1195,6 +1337,7 @@ export class GunPeerObject {
 
   async webSocketMessage(ws, message) {
     await this.ready();
+    this.countRequests({ frames: 1 });
     try {
       await this.handleRawMessage(message, ws);
     } catch {
@@ -1272,6 +1415,10 @@ export class GunPeerObject {
           if (Object.keys(merge.changed).length) {
             this.relayPut(merge.changed, sender, id);
           }
+          // The writer passed a callback and waits on this ack: make it durable first.
+          if (message.ok && this.dirty.size) {
+            await this.flushDirty();
+          }
         }
         if (refused.length) {
           replies.push({ "@": message["#"], err: `${this.budgetRefusal("writes")} (${refused.length} not stored)` });
@@ -1282,6 +1429,11 @@ export class GunPeerObject {
 
       if (message.get && typeof message.get === "object") {
         replies.push(await this.readGraph(message));
+      }
+
+      // A client saying hi learns straight away if live traffic should slow down.
+      if (message.dam === "?" && sender && this.loadStage !== "ok") {
+        replies.push(this.loadMessage());
       }
     }
 
@@ -1310,8 +1462,13 @@ export class GunPeerObject {
    */
   async loadNodeEntry(soul, { allowStorage = true } = {}) {
     if (this.ephemeral.matches(soul)) {
-      const entry = this.ephemeral.get(soul);
+      const entry = this.ephemeral.view(soul);
       return { node: entry?.node ?? null, json: entry?.json ?? null, legacy: false, ephemeral: true };
+    }
+
+    const pending = this.dirty.get(soul);
+    if (pending) {
+      return { node: pending.node, json: pending.json, legacy: false, pending: true };
     }
 
     const cached = this.nodeCache.get(soul);
@@ -1385,8 +1542,6 @@ export class GunPeerObject {
   async mergeGraph(graph) {
     const changed = {};
     const refused = [];
-    let added = 0;
-    let wroteStorage = false;
     const now = Date.now();
     for (const [soul, incomingNode] of Object.entries(graph)) {
       if (!incomingNode || typeof incomingNode !== "object") {
@@ -1395,15 +1550,20 @@ export class GunPeerObject {
 
       if (this.ephemeral.matches(soul)) {
         const existing = this.ephemeral.get(soul, now);
-        const merged = mergeNode(soul, existing?.node || { _: { "#": soul, ">": {} } }, incomingNode);
+        const incoming = dropRepeatedLinks(existing?.node, incomingNode);
+        if (!incoming) {
+          this.ephemeral.touch(soul, now);
+          continue;
+        }
+        const merged = mergeNode(soul, existing?.node || { _: { "#": soul, ">": {} } }, incoming);
         const json = JSON.stringify(merged);
         if (existing && existing.json === json) {
           this.ephemeral.touch(soul, now);
           continue;
         }
         this.ephemeral.set(soul, merged, json, now);
-        changed[soul] = incomingNode;
-        if (nodeHasContent(incomingNode)) {
+        changed[soul] = incoming;
+        if (nodeHasContent(incoming)) {
           this.rebuildEphemeralParents(soul, changed, now);
         }
         continue;
@@ -1415,34 +1575,114 @@ export class GunPeerObject {
       }
       try {
         const existing = await this.loadNodeEntry(soul);
-        const merged = mergeNode(soul, existing.node || { _: { "#": soul, ">": {} } }, incomingNode);
+        const incoming = dropRepeatedLinks(existing.node, incomingNode);
+        if (!incoming) {
+          continue;
+        }
+        const merged = mergeNode(soul, existing.node || { _: { "#": soul, ">": {} } }, incoming);
         const json = JSON.stringify(merged);
         if (existing.node && existing.json === json) {
           continue;
         }
-        await this.putNode(soul, merged, json);
-        wroteStorage = true;
-        if (existing.legacy) {
-          await this.kvDelete(nodeKey(soul));
-        }
-        if (!existing.node) {
-          added += 1;
-        }
-        changed[soul] = incomingNode;
+        this.markDirty(soul, merged, json, { legacy: existing.legacy, added: !existing.node });
+        changed[soul] = incoming;
       } catch (error) {
         this.noteStorageError(error);
         refused.push(soul);
       }
     }
 
+    return { changed, refused };
+  }
+
+  markDirty(soul, node, json, { legacy = false, added = false } = {}) {
+    const held = this.dirty.get(soul);
+    this.dirty.set(soul, { node, json, legacy: Boolean(held?.legacy || legacy), added: Boolean(held?.added || added) });
+    this.nodeCache.delete(soul);
+    if (!this.dirtySince) {
+      this.dirtySince = Date.now();
+    }
+    this.scheduleFlush();
+  }
+
+  /** 1s after the last change, and never later than 5s after the first unwritten one. */
+  scheduleFlush(delay = null) {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+    }
+    const wait = delay ?? Math.max(0, Math.min(WRITE_BEHIND_IDLE_MS, this.dirtySince + WRITE_BEHIND_MAX_MS - Date.now()));
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.flushDirty().catch(() => {});
+    }, wait);
+  }
+
+  /** Write every dirty soul to SQLite. Safe to call any time; concurrent calls share one pass. */
+  async flushDirty() {
+    if (this.flushing) {
+      await this.flushing;
+    }
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (!this.dirty.size) {
+      this.dirtySince = 0;
+      return { written: 0 };
+    }
+    this.flushing = this.withUsage("gun", () => this.writeDirty());
+    try {
+      return await this.flushing;
+    } finally {
+      this.flushing = null;
+    }
+  }
+
+  async writeDirty() {
+    const batch = [...this.dirty];
+    this.dirty.clear();
+    this.dirtySince = 0;
+    let added = 0;
+    let written = 0;
+    const failed = [];
+    for (const [soul, entry] of batch) {
+      if (!this.storageHealth.ready) {
+        failed.push([soul, entry]);
+        continue;
+      }
+      try {
+        await this.putNode(soul, entry.node, entry.json);
+        written += 1;
+        if (entry.legacy) {
+          await this.kvDelete(nodeKey(soul));
+        }
+        if (entry.added) {
+          added += 1;
+        }
+      } catch (error) {
+        this.noteStorageError(error);
+        failed.push([soul, entry]);
+      }
+    }
+    // Storage blocked: keep what could not be written (a newer put of the same
+    // soul wins) and try again once the block is due to lift.
+    for (const [soul, entry] of failed) {
+      if (!this.dirty.has(soul)) {
+        this.dirty.set(soul, entry);
+      }
+    }
+    if (this.dirty.size) {
+      this.dirtySince ||= Date.now();
+      this.scheduleFlush(failed.length ? STORAGE_RETRY_MS : null);
+    }
     if (added) {
       this.stats.graphNodes += added;
       await this.persistStats().catch((error) => this.noteStorageError(error));
     }
-    if (wroteStorage) {
+    if (written) {
       await this.evictOldGraphDataIfNeeded();
     }
-    return { changed, refused };
+    return { written, pending: this.dirty.size };
   }
 
   async putNode(soul, node, json) {
@@ -1527,13 +1767,20 @@ export class GunPeerObject {
     this.nodeCache.clear();
     this.ephemeral.clear();
     this.seenMessages.clear();
+    this.dirty.clear();
+    this.dirtySince = 0;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
     this.migration = { done: true, lastBatchAt: 0 };
     await this.kvPut(NODE_MIGRATION_KEY, this.migration);
     this.housekeeping = { ephemeralSweepDone: true, lastSweepAt: 0, sweptRows: 0, lastTombstoneGcAt: Date.now(), tombstonesCollected: 0 };
     await this.persistHousekeeping();
-    this.budget = { day: utcDay(), rowsRead: 0, rowsWritten: 0 };
-    this.budgetDirty = { rows: 0, since: Date.now() };
+    this.budget = { day: utcDay(), rowsRead: 0, rowsWritten: 0, frames: 0, requests: 0 };
+    this.budgetDirty = { rows: 0, frames: 0, since: Date.now() };
     this.budgetLoaded = true;
+    this.loadStage = "ok";
     await this.kvPut(BUDGET_KEY, { ...this.budget });
     this.sqlUsage = { rowsRead: 0, rowsWritten: 0, since: Date.now(), byCategory: {} };
     this.startTime = Date.now();
@@ -1557,6 +1804,7 @@ export class GunPeerObject {
   }
 
   async e2eListNodes() {
+    await this.flushDirty();
     const souls = this.sqlAll("SELECT soul FROM nodes ORDER BY soul").map((row) => row.soul);
     return { souls };
   }
@@ -1605,9 +1853,12 @@ export class GunPeerObject {
       day: utcDay(),
       rowsRead: Math.max(0, Number(body.rowsRead) || 0),
       rowsWritten: Math.max(0, Number(body.rowsWritten) || 0),
+      frames: Math.max(0, Number(body.frames) || 0),
+      requests: Math.max(0, Number(body.requests) || 0),
     };
     this.budgetLoaded = true;
     await this.persistBudget(true);
+    this.countRequests();
     return { ok: true, budget: this.budgetPayload() };
   }
 
@@ -1664,9 +1915,8 @@ export class GunPeerObject {
         ORDER BY soul LIMIT ?`,
       ...params,
       limit + 1,
-    ).filter((row) => !this.ephemeral.matches(row.soul));
-    const memory = this.ephemeral
-      .list({ prefix, query })
+    ).filter((row) => !this.ephemeral.matches(row.soul) && !this.dirty.has(row.soul));
+    const memory = [...this.ephemeral.list({ prefix, query }), ...this.pendingRows(prefix, query)]
       .filter((row) => !startCursor || row.soul > startCursor);
     const merged = [...rows, ...memory].sort((a, b) => a.soul.localeCompare(b.soul));
     const truncated = merged.length > limit;
@@ -1678,6 +1928,20 @@ export class GunPeerObject {
     };
   }
 
+  /** Listing rows for stored souls still waiting in the write-behind buffer. */
+  pendingRows(prefix = "", query = "") {
+    const rows = [];
+    for (const [soul, entry] of this.dirty) {
+      if ((prefix && !soul.startsWith(prefix)) || (query && !soul.toLowerCase().includes(query))) {
+        continue;
+      }
+      if (nodeHasContent(entry.node)) {
+        rows.push({ soul, label: nodeLabel(entry.node, soul), updated: nodeUpdated(entry.node) });
+      }
+    }
+    return rows;
+  }
+
   /** Most recently updated live souls; served from the partial covering index. */
   graphListSoulsByUpdated(limit, prefix = "", query = "") {
     const { clauses, params } = soulFilterSql(prefix, query);
@@ -1687,9 +1951,9 @@ export class GunPeerObject {
         ORDER BY updated DESC, soul LIMIT ?`,
       ...params,
       limit + 1,
-    ).filter((row) => !this.ephemeral.matches(row.soul));
-    // ponytail: live souls come from memory at zero rows and sort in by their Gun state.
-    const merged = [...rows, ...this.ephemeral.list({ prefix, query })].sort(
+    ).filter((row) => !this.ephemeral.matches(row.soul) && !this.dirty.has(row.soul));
+    // ponytail: live souls (and stored ones not yet flushed) come from memory at zero rows.
+    const merged = [...rows, ...this.ephemeral.list({ prefix, query }), ...this.pendingRows(prefix, query)].sort(
       (a, b) => b.updated - a.updated || a.soul.localeCompare(b.soul),
     );
     return {
@@ -2173,6 +2437,8 @@ export class GunPeerObject {
         // Memory-only live souls (cursors, presence); never stored.
         liveNodes: this.ephemeral.size,
         liveBytes: this.ephemeral.bytes,
+        // Stored souls merged in memory and waiting for the next write-behind flush.
+        pendingWrites: this.dirty.size,
         livePrefixes: this.ephemeral.prefixes,
         lastEviction: this.stats.lastEviction ?? null,
         // Rows since this instance woke (SQL and KV), with a per-source breakdown.
@@ -2197,6 +2463,53 @@ export class GunPeerObject {
   persistStats() {
     return this.kvPut("stats", this.stats);
   }
+}
+
+function isGunLink(value) {
+  return Boolean(value) && typeof value === "object" && typeof value["#"] === "string" && Object.keys(value).length === 1;
+}
+
+/**
+ * Gun's chained put (`gun.get(a).get(b).get(c).put(x)`) re-sends every ancestor
+ * link with a fresh state. Merging that as a change rewrote the stored root row
+ * on every cursor move. A field that repeats the link already held is dropped:
+ * no state bump, no write, no relay. Links only; primitives and nulls keep plain
+ * HAM, where a newer state on the same value can still matter.
+ * Returns the node to merge, or null when nothing is left.
+ */
+function dropRepeatedLinks(existingNode, incomingNode) {
+  if (!existingNode) {
+    return incomingNode;
+  }
+  const kept = {};
+  let dropped = false;
+  let count = 0;
+  for (const [field, value] of Object.entries(incomingNode)) {
+    if (field === "_") {
+      continue;
+    }
+    const held = existingNode[field];
+    if (isGunLink(value) && isGunLink(held) && value["#"] === held["#"]) {
+      dropped = true;
+      continue;
+    }
+    kept[field] = value;
+    count += 1;
+  }
+  if (!dropped) {
+    return incomingNode;
+  }
+  if (!count) {
+    return null;
+  }
+  const states = incomingNode._?.[">"] || {};
+  const keptStates = {};
+  for (const field of Object.keys(kept)) {
+    if (field in states) {
+      keptStates[field] = states[field];
+    }
+  }
+  return { ...kept, _: { ...incomingNode._, ">": keptStates } };
 }
 
 function mergeNode(soul, existingNode, incomingNode) {
@@ -2485,6 +2798,8 @@ function nodeLabel(node, soul) {
 export {
   NodeCache,
   EphemeralStore,
+  dropRepeatedLinks,
+  isGunLink,
   budgetStage,
   parseEphemeralPrefixes,
   utcDay,

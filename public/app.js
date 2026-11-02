@@ -1,5 +1,6 @@
-const GRAPH_MAX_POINTS = 60;
-const GRAPH_SAMPLE_MS = 5000;
+// Every poll is a Durable Object request, which the free plan caps per day.
+const GRAPH_MAX_POINTS = 20;
+const GRAPH_SAMPLE_MS = 15000;
 const GRAPH_WINDOW_MS = GRAPH_MAX_POINTS * GRAPH_SAMPLE_MS;
 
 // Format bytes to human readable
@@ -247,6 +248,11 @@ function updateBudget(storage) {
     updateRowMeter('rowsRead', budget.rowsRead, budget.limits?.rowsRead, budget.stages);
     updateRowMeter('rowsWritten', budget.rowsWritten, budget.limits?.rowsWritten, budget.stages);
     renderBudgetStages(budget.stages, budget.fraction ?? 0);
+    const req = budget.requests;
+    if (req) {
+        updateRowMeter('requests', req.billed, req.limit, [{ at: req.shedAt }, { at: 1 }]);
+        setText('requestsStage', req.stage === 'ok' ? '' : ` ${req.stage.replace(/-/g, ' ')}`);
+    }
     const blocked = storage.health && storage.health.ready === false;
     const paused = blocked || budget.stage !== 'ok';
     const stage = document.getElementById('budgetStage');
@@ -261,6 +267,7 @@ function updateBudget(storage) {
         note.textContent =
             `Free tier allows ${budget.limits.rowsRead.toLocaleString('en-US')} rows read and ${budget.limits.rowsWritten.toLocaleString('en-US')} rows written per UTC day. ` +
             'Live cursors and presence stay in memory and cost no rows. ' +
+            (budget.requests ? `Requests count socket messages at ${budget.requests.frameRatio}:1 against ${budget.requests.limit.toLocaleString('en-US')} a day; past ${Math.round(budget.requests.shedAt * 100)}% clients stop sending cursors. ` : '') +
             (blocked ? `Storage is blocked right now (${storage.health.error || 'quota'}); live data keeps relaying. ` : '') +
             'Whichever counter is further along decides what pauses:';
     }
@@ -409,7 +416,7 @@ window.addEventListener('offline', () => {
     redrawThroughputGraph(lastGraph.samples, lastGraph.windowMs);
 });
 
-// ponytail: self-check time-based graph x (5-minute window at 5s samples)
+// ponytail: self-check time-based graph x (5-minute window at 15s samples)
 if (typeof console !== 'undefined' && console.assert) {
     const w = 600;
     const now = 100_000;

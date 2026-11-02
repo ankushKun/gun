@@ -39,6 +39,10 @@ export default defineConfig(({ mode }) => {
 				// Free tier daily SQLite row limits; the object sheds load in stages before them.
 				ROWS_READ_DAILY_LIMIT: bindings.text("5000000"),
 				ROWS_WRITTEN_DAILY_LIMIT: bindings.text("100000"),
+				// Free plan Durable Object requests per day. FRAME_RATIO is how many inbound
+				// WebSocket messages count as one request: 1 until the dashboard shows 20:1 applies.
+				REQUESTS_DAILY_LIMIT: bindings.text("100000"),
+				FRAME_RATIO: bindings.text("1"),
 				...(test
 					? { E2E_RESET_TOKEN: bindings.text(process.env.E2E_RESET_TOKEN || "local-e2e-only") }
 					: {}),

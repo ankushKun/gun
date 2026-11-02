@@ -90,6 +90,15 @@
                         <div class="storage-meter__fill"></div>
                     </div>
                 </li>
+                <li class="meter-row">
+                    <div class="meter-row__head">
+                        <span class="meter-row__label">requests<span id="requestsStage"></span></span>
+                        <span class="meter-row__value mono"><span id="requestsToday">0</span><span id="requestsLimit" class="meter-row__limit"></span><span id="requestsPercent" class="meter-row__pct"></span></span>
+                    </div>
+                    <div id="requestsMeter" class="storage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Durable Object requests today">
+                        <div class="storage-meter__fill"></div>
+                    </div>
+                </li>
             </ul>
             <p class="section-note" id="budgetNote"></p>
             <ol class="threshold-list" id="budgetStages" aria-label="What pauses as the budget fills">
